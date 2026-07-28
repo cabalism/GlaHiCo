@@ -4,7 +4,8 @@ The name is "sashiko" with GHC's consonants substituted in — a nod to the
 Linux kernel review service this borrows its shape from.
 
 Status: design draft, pre-implementation. Decisions below come from the
-requirements interview on 2026-07-28; open questions are collected at the end.
+requirements interview on 2026-07-28 and the build-versus-fork decision the same
+day (§1, `sashiko-ghc.md`); open questions are collected at the end.
 
 ## 1. Purpose
 
@@ -28,6 +29,36 @@ These are promises already made in public and are binding on the design:
 stage that drops its own low-confidence findings is part of the disclosed
 prompt and is therefore fine. What is forbidden is Simon reading the output and
 deleting the embarrassing parts before posting.
+
+### Relationship to sashiko
+
+Decided 2026-07-28: GaHiCo is a separate tool that treats sashiko as a
+**reference implementation**, not as a dependency, a fork, or an upstream to
+contribute GHC support to. `sashiko-ghc.md` in this repository is the port
+analysis that led there.
+
+The case against forking is not that sashiko's plumbing is kernel-specific — it
+mostly isn't. It is that the parts worth having are small and separable, while
+the parts a fork forces you to carry are neither wanted nor static:
+
+- The conflict surface of a long-lived fork is `src/worker/prompts.rs`, 2483
+  lines of hardcoded kernel stage prompts. That is the file GaHiCo would rewrite
+  in full, and the file upstream regularly rewrites too, syncing from the
+  review-prompts repository. Every rebase is a conflict in the deliverable.
+- What comes with it is a service: webhooks, a database, a web UI, NNTP and lore
+  ingestion, email policy, `MAINTAINERS`-based baseline resolution. §1 rules all
+  of that out. Domain-agnostic is not the same as wanted.
+- sashiko is Apache 2.0, so anything worth taking can be taken with attribution.
+  A fork relationship buys nothing a copy doesn't.
+
+The orchestrator is also much smaller here than the 3576 lines of
+`src/reviewer.rs` suggest, because most of that file is database persistence,
+email routing, and quota management. What remains after removing them — worktree
+prep, stage sequencing, artifact writing — is §4's `Repo`/`Pipeline`/`Bundle`.
+
+Haskell survives this decision unchanged, for the reasons in §4. Reuse here
+means reading sashiko before writing the equivalent module, not linking against
+it, so the implementation language was never actually what the choice turned on.
 
 ### Non-goals (initially)
 
@@ -141,6 +172,25 @@ contributors can read and patch it, and because the findings interchange (§7)
 is the load-bearing part of the design and benefits most from a checked schema.
 Nothing here calls a model provider's SDK directly, so Python's advantage in
 that ecosystem does not apply. See §7 for what changes if it ever does.
+
+### What to read from sashiko, and when
+
+Per §1, sashiko is consulted module by module as the corresponding GaHiCo module
+gets written. Paths are relative to the sashiko checkout; it is Apache 2.0 and
+anything derived from it carries attribution.
+
+| Before writing | Read | For |
+|---|---|---|
+| `Pipeline.hs` | `src/worker/stage.rs` (400 lines) | The stage contract: structured findings between stages, schema validation, retry on malformed output. Its only imports are `crate::ai` types and `serde_json`, so it reads standalone. |
+| `Harness/Claude.hs`, `Harness/Codex.hs` | `src/ai/claude_cli.rs`, `src/ai/codex_cli.rs` | Driving `claude -p` and `codex exec` as subprocesses: output parsing, tool allowlists, session handling. This is the existing answer to §7's problem that stage 2 needs an agent loop and Haskell has no Agent SDK. |
+| `prompts/false-positive-guide.md` | `third_party/prompts/kernel/false-positive-guide.md` | Structure, not content. 495 lines of enumerated noise patterns where each carries its own carve-outs — the mechanism that keeps a guide from suppressing real bugs as it grows (§7). |
+| The regression corpus (§11) | `src/bin/benchmark.rs` | Known-buggy commits, `fixed_by`, LLM judge, hit rate. Already project-agnostic; only the dataset is kernel-specific. |
+
+One divergence to make deliberately rather than by omission: sashiko's stage
+contract retries a stage that returns malformed JSON, where §7 makes it a hard
+error. Hard error is the right default for a tool whose output is published
+under a no-curation promise, but it should be a decision, not an accident of not
+having read `stage.rs`.
 
 The layering that matters: **context assembly, pipeline execution, and
 publication are independent.** Any of them can be run alone, which is what
@@ -460,9 +510,20 @@ the environment or a pass-style command, never from the config file.
    were wrong right there. Pre-populating the YAML from snippet comments and MR
    replies would cut the annotation cost, which is the thing most likely to
    stop happening.
-9. **Rename to GlaHiCo?** Under consideration. "Gla-Hi-Co" matches "sa-shi-ko"
-   syllable for syllable rather than only in its consonants, and the syllables
-   are Glasgow Haskell Compiler. It also sounds better. The cost is the
-   directory, `~/gahico/`, `~/.config/gahico/`, the binary name and the module
-   namespace — trivial now, tedious once any of that exists, so this wants
-   deciding before implementation starts.
+9. **What a fresh invocation per stage costs.** §7 gives each stage its own
+   harness invocation with prior outputs passed as files, which buys replay,
+   per-stage auditability, and portability across harnesses — all of which §8's
+   disclosure and §9's public bundles depend on. The price is re-reading the
+   context pack once per stage, roughly quadrupling input tokens on a four-stage
+   pipeline before any exploration. Prompt caching recovers much of it if stages
+   share a prefix and run close together, which they do. This is the same
+   question as §13.2 seen from the design side, and settling one settles both.
+   sashiko avoids the cost by threading state in-process through its database —
+   an option foreclosed here, and deliberately so.
+10. **Rename to GlaHiCo?** Under consideration. "Gla-Hi-Co" matches "sa-shi-ko"
+    syllable for syllable rather than only in its consonants, and the syllables
+    are Glasgow Haskell Compiler. It also sounds better. The cost is the
+    directory, `~/gahico/`, `~/.config/gahico/`, the binary name and the module
+    namespace — trivial now, tedious once any of that exists. Now the first
+    thing to settle: with the build-versus-fork question closed (§1), nothing
+    else stands between this design and code that hardcodes whichever name wins.
