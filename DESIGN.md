@@ -457,7 +457,12 @@ vibe, and it is the only way to tell whether a prompt change helped.
   the agent. Needs a build orchestration step outside the agent.
 - Finer-grained correctness stages, as pipeline config.
 - Regression corpus: run against GHC commits that were later fixed by a
-  follow-up MR, and measure hit rate — sashiko's methodology, GHC's data.
+  follow-up MR — sashiko's methodology, GHC's data. Scoped to a smoke test of
+  10–20 commits, run once before a tool release to catch obvious breakage. A
+  published hit rate needs a corpus large enough to be meaningful, which the
+  subscription budget cannot reach (§13); spreading the runs over weeks instead
+  would let the tool commit drift mid-measurement, so the number would not mean
+  what it claims either way.
 - Additional harnesses.
 - Only after signal-to-noise is demonstrably good: consider automating the
   trigger (polling GitLab todos) and the posting.
@@ -474,16 +479,29 @@ the environment or a pass-style command, never from the config file.
 
 ## 13. Open questions
 
+Several of these are constrained by a fact worth stating once: the harnesses
+run on Claude Pro and Codex Pro subscriptions, which meter interactive use.
+Anything batch-shaped — a regression corpus, a replay sweep — is not affordable
+there, and driving a subscription at that volume is not what it is sold for.
+The subscription harness is therefore the budget for day-to-day reviews, and
+volume work belongs to an API backend or does not happen. See Q2, Q3, Q6, Q7
+and Q9.
+
 1. **Thread outcome.** The mailing list archive rendered only the original
    post, so the 15 replies (Klebinger, Shao, Angermann, Graf, Peyton Jones,
    Ellis, Duggal) are not reflected here. Any concessions or constraints agreed
    there need folding into §1 before implementation.
 2. **Cost per review.** A 4-stage pipeline over a large MR with free
    exploration is not cheap. Worth a budget cap per run, and a printed cost
-   before publication?
+   before publication? Under a subscription the cap is not a cost control but a
+   rationing one: the scarce thing is the weekly allowance, shared with every
+   other use of the harness.
 3. **Multiple harnesses per review.** Running claude *and* codex on the same MR
    and reporting both would be a strong signal-to-noise filter (agreement
-   between independent models). Worth it, or too expensive for v1?
+   between independent models). This is the one volume question the
+   subscriptions can absorb — 2× on a single MR, not N× over a corpus — since
+   the two runs draw on separate allowances. Worth it for v1, or is the
+   agreement signal not yet worth doubling the wall time?
 4. **Re-reviews.** When an MR is updated and re-pinged, should the review be
    incremental (diff since the last reviewed SHA) or always full? Full is
    simpler and more honest; incremental is much cheaper on long-lived MRs.
@@ -495,15 +513,20 @@ the environment or a pass-style command, never from the config file.
    the appendix is the exact prompt *GaHiCo* sent, not the full input to the
    model. Options: say exactly that in the disclosure and accept it; or move the
    non-agentic stages to direct API calls, where the published prompt is the
-   whole prompt (§7). This is the strongest argument for an API backend, and
-   worth settling before the first public review rather than after.
+   whole prompt (§7). This is the strongest argument for an API backend; the
+   volume constraint above is a second, independent one pointing the same way.
+   Worth settling before the first public review rather than after.
 7. **Replaying annotated runs against a new guide.** Bundles archive the context
    pack and every stage input, so re-running an old target under a new tool
    commit is mechanically possible. Doing it over the runs already annotated in
    §10 would show whether a false-positive-guide edit actually suppressed what
    it was meant to — and, on the true-positive ones, whether it suppressed
-   anything it shouldn't have. Is that worth building early, given it is the
-   only real check on a guide that otherwise only grows?
+   anything it shouldn't have. But a sweep of the annotated set per guide edit
+   is exactly the batch shape the subscriptions cannot pay for, and the sweep is
+   where the value was. What survives is the narrow form: replay one archived
+   run when one guide edit is suspicious. Worth building for that alone? It
+   remains the only real check on a guide that otherwise only grows, and the
+   full sweep stays available to an API backend.
 8. **Feedback from snippet comments.** `gahico feedback` currently opens an
    empty file for Simon to fill in from memory. Since reviews are published as
    snippets with comments enabled (§8), authors will often say which findings
