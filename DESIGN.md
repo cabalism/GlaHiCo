@@ -460,3 +460,9 @@ the environment or a pass-style command, never from the config file.
    were wrong right there. Pre-populating the YAML from snippet comments and MR
    replies would cut the annotation cost, which is the thing most likely to
    stop happening.
+9. **Rename to GlaHiCo?** Under consideration. "Gla-Hi-Co" matches "sa-shi-ko"
+   syllable for syllable rather than only in its consonants, and the syllables
+   are Glasgow Haskell Compiler. It also sounds better. The cost is the
+   directory, `~/gahico/`, `~/.config/gahico/`, the binary name and the module
+   namespace — trivial now, tedious once any of that exists, so this wants
+   deciding before implementation starts.
