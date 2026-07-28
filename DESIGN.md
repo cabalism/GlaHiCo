@@ -73,32 +73,49 @@ A run is identified by `<mr>/<utc-timestamp>`; `<MR>` alone means "latest run".
 
 ## 4. Architecture
 
+Haskell, as a cabal project.
+
 ```
-gahico/
-  cli.py            argument parsing, top-level command flow
-  config.py         ~/.config/gahico/config.toml + defaults
-  gitlab.py         MR/issue/note fetch, snippet creation (python-gitlab)
-  repo.py           clone maintenance, MR ref fetch, worktree pool
-  context.py        assembles the context pack for a run
-  pipeline.py       loads pipeline YAML, runs stages, threads findings
-  harness/
-    base.py         Harness protocol: run(prompt, cwd, model, effort) -> Result
-    claude.py       `claude -p` adapter
-    codex.py        `codex exec` adapter
-  findings.py       Finding dataclass, JSON schema, merge/dedup helpers
-  report.py         findings -> review.md, disclosure header, comment template
-  bundle.py         artifact bundle layout, writing, indexing
-  feedback.py       feedback YAML scaffold and rollup stats
+gahico.cabal
+src/GaHiCo/
+  CLI.hs            optparse-applicative, top-level command flow
+  Config.hs         ~/.config/gahico/config.yaml + defaults
+  GitLab.hs         MR/issue/note fetch, snippet creation
+  Repo.hs           clone maintenance, MR ref fetch, worktree pool
+  Context.hs        assembles the context pack for a run
+  Pipeline.hs       loads pipeline YAML, runs stages, threads findings
+  Harness.hs        Harness record: run :: Prompt -> WorkTree -> ModelSpec
+                                        -> IO Result
+  Harness/Claude.hs `claude -p` adapter
+  Harness/Codex.hs  `codex exec` adapter
+  Findings.hs       Finding type, To/FromJSON, merge and dedup
+  Report.hs         findings -> review.md, disclosure header, comment template
+  Bundle.hs         artifact bundle layout, writing, indexing
+  Feedback.hs       feedback YAML scaffold and rollup stats
 prompts/
   correctness.yaml  pipeline definition (stages, models, prompt files)
   docs.yaml
   stages/*.md       prompt bodies, versioned in git
 ```
 
+Dependencies of note: `gitlab-haskell` (merge requests, issues, notes,
+discussions), `req` + `aeson` for snippet creation, which `gitlab-haskell` does
+not cover, `typed-process` for harness invocation, `yaml` for pipeline and
+config files, `optparse-applicative` for the CLI.
+
+Haskell over Python because it is the language Simon is fluent in, because GHC
+contributors can read and patch it, and because the findings interchange (§7)
+is the load-bearing part of the design and benefits most from a checked schema.
+Nothing here calls a model provider's SDK directly, so Python's advantage in
+that ecosystem does not apply. See §7 for what changes if it ever does.
+
 The layering that matters: **context assembly, pipeline execution, and
 publication are independent.** Any of them can be run alone, which is what
 makes `--dry-run`, `--no-publish`, and `publish <RUN>` cheap to support and
 makes the whole thing testable without an API key.
+
+`Harness` is a record of functions rather than a class, so the harness is
+chosen at runtime from config and a new backend is a value, not an instance.
 
 ## 5. Context pack
 
@@ -178,6 +195,25 @@ referenced from the prompt. This keeps stages portable across harnesses that
 have very different session models, and makes each stage independently
 replayable from the bundle. Session continuation is a possible later
 optimisation, not a design assumption.
+
+### Harness backends, including direct API calls
+
+The harness boundary is deliberately narrow, and calling a provider's API
+directly is just another implementation of it — no change to the pipeline,
+context, or publication layers.
+
+The cost of doing so is not the HTTP client; it is the agent loop. Stages 1, 3
+and 4 are prompt-in, output-out over a context pack GaHiCo assembled itself, so
+an API backend for them is a `POST /v1/messages` and a decoder. Stage 2 wants
+free exploration of the worktree, so an API backend for *it* means implementing
+tool schemas, the multi-turn loop, and allowlist enforcement — which is
+precisely what `claude -p` already is. There is no Haskell equivalent of the
+Agent SDK to lean on.
+
+So the split is intentional: CLI harnesses for v1 everywhere, and if the
+disclosure gap in open question §13.6 is judged serious, an API backend for the
+non-agentic stages first, where it is cheap. Reconsidering the implementation
+language only becomes reasonable if the whole pipeline goes API-native.
 
 ### Findings as a typed interchange
 
@@ -294,8 +330,11 @@ vibe, and it is the only way to tell whether a prompt change helped.
 
 ## 12. Configuration and secrets
 
-`~/.config/gahico/config.toml`: gitlab url, project paths, clone/worktree/run
-directories, default harness/model/effort, size caps, pruning policy.
+`~/.config/gahico/config.yaml`: gitlab url, project paths, clone/worktree/run
+directories, default harness/model/effort, size caps, pruning policy. YAML
+rather than TOML only because pipelines are already YAML, and one format is one
+parser.
+
 The GitLab PAT (scope `api`, for reading MRs and creating snippets) comes from
 the environment or a pass-style command, never from the config file.
 
@@ -316,3 +355,11 @@ the environment or a pass-style command, never from the config file.
    simpler and more honest; incremental is much cheaper on long-lived MRs.
 5. **Public bundle repo and rate of growth.** Raw harness output per run is
    large. Cap it, or accept a fat repo?
+6. **"Exact prompt" versus the harness system prompt.** §1 promises to disclose
+   the exact prompt, but a CLI harness prepends a system prompt and tool
+   preamble that GaHiCo neither controls nor can reproduce in the appendix. So
+   the appendix is the exact prompt *GaHiCo* sent, not the full input to the
+   model. Options: say exactly that in the disclosure and accept it; or move the
+   non-agentic stages to direct API calls, where the published prompt is the
+   whole prompt (§7). This is the strongest argument for an API backend, and
+   worth settling before the first public review rather than after.
