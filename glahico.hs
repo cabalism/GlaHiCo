@@ -948,11 +948,32 @@ renderReview r =
       "; final context ≈" <> commaSep (maximum cs) <> " tokens max across "
         <> tshow (length cs) <> " calls"
     findingsLine
-      | r.unverified > 0 =
-          tshow r.totalFindings <> " reported by the finder; only the first "
-            <> tshow (length r.verified) <> " were verified, " <> tshow r.unverified
-            <> " remain unverified (preserved in findings.json in the run directory)"
-      | otherwise = tshow r.totalFindings <> " reported by the finder, all verified"
+      | r.totalFindings == 0 = "none reported by the finder"
+      | otherwise =
+          tshow r.totalFindings <> " reported by the finder; "
+            <> T.intercalate "; " (outcomeParts ++ unverifiedParts)
+    outcomeParts =
+      [tshow (length confirmedRel) <> " confirmed" | not (null confirmedRel)]
+        ++ [ tshow (length uncertainRel) <> " uncertain but judged relevant (included as low-confidence)"
+           | not (null uncertainRel)
+           ]
+        ++ [ tshow (length droppedFvs) <> " dropped ("
+               <> T.intercalate ", " [f.id <> ": " <> dropReason v | (f, v) <- droppedFvs]
+               <> ")"
+           | not (null droppedFvs)
+           ]
+    unverifiedParts =
+      [ tshow r.unverified <> " not verified (preserved in findings.json in the run directory)"
+      | r.unverified > 0
+      ]
+    droppedFvs =
+      [ (f, v)
+      | (f, v, _) <- r.verified
+      , not (v.relevant && (v.verdict == "confirmed" || v.verdict == "uncertain"))
+      ]
+    dropReason (v :: Verdict)
+      | v.verdict == "refuted" = "refuted"
+      | otherwise = v.verdict <> " and judged not relevant"
     block (f, v, snips) =
       [ "### " <> f.id <> ": " <> f.title
       , ""
