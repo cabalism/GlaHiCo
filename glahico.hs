@@ -938,7 +938,7 @@ data Report = Report
 
 renderReview :: Report -> Text
 renderReview r =
-  T.unlines (headerLines ++ findingsSection ++ lowSection ++ adhocSection ++ dirtySection)
+  T.unlines (headerLines ++ findingsSection ++ lowSection ++ adhocSection ++ dirtySection ++ disclaimerLines)
   where
     confirmedRel = [fv | fv@(_, v, _) <- r.verified, v.verdict == "confirmed", v.relevant]
     uncertainRel = [fv | fv@(_, v, _) <- r.verified, v.verdict == "uncertain", v.relevant]
@@ -1005,13 +1005,6 @@ renderReview r =
     headerLines =
       [ "# GlaHiCo review"
       , ""
-      , "> **This is tool output**, produced by GlaHiCo, an LLM review pipeline, and"
-      , "> posted verbatim. Findings were filtered mechanically by the pipeline's"
-      , "> verifier stage; no human curated the output. The Claude Code harness"
-      , "> prepends a system prompt of its own that this disclosure cannot reproduce —"
-      , "> the disclosure covers what GlaHiCo sent — and some host state (account"
-      , "> authentication, `~/.claude.json`) also remains active in the harness."
-      , ""
       , "## Disclosure"
       , ""
       , "- GlaHiCo commit: " <> backticked r.commit <> " (the prompts are part of the repository at this commit)"
@@ -1061,6 +1054,14 @@ renderReview r =
         , "````"
         , ""
         ]
+    disclaimerLines =
+      [ "> **This is tool output**, produced by GlaHiCo, an LLM review pipeline, and"
+      , "> posted verbatim. Findings were filtered mechanically by the pipeline's"
+      , "> verifier stage; no human curated the output. The Claude Code harness"
+      , "> prepends a system prompt of its own that this disclosure cannot reproduce —"
+      , "> the disclosure covers what GlaHiCo sent — and some host state (account"
+      , "> authentication, `~/.claude.json`) also remains active in the harness."
+      ]
     dirtySection = case r.uncommittedPrompts of
       [] -> []
       ps ->
@@ -1186,8 +1187,8 @@ main = do
   dirtyPrompts <- uncommittedPromptFiles
   let targetDesc = case resolved.mr of
         Just md ->
-          "!" <> tshow md.iid <> " in " <> md.project
-            <> " (https://gitlab.haskell.org/" <> md.project <> "/-/merge_requests/" <> tshow md.iid <> ")"
+          "[" <> md.project <> "!" <> tshow md.iid
+            <> "](https://gitlab.haskell.org/" <> md.project <> "/-/merge_requests/" <> tshow md.iid <> ")"
         Nothing -> "local range " <> T.pack opts.target
       report =
         Report
