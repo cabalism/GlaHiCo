@@ -2,6 +2,8 @@
 
 Observations from the 2026-07-29 implementation session (branch `glahico-script`):
 
+- Consider (network) access via glab so the agents can lookup relevant issues.
+
 - **Finder prompt references `discussion.md` on local runs.** The sentence
   "Check {ctx}/discussion.md before reporting …" in `prompts/finder.md` is not
   tagged `[MR targets only]`, so local-range runs still point the finder at a
