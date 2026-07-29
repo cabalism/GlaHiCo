@@ -790,11 +790,14 @@ data Stage = Stage
   , ranModels :: [Text]
   }
 
--- | A snippet as it appears in the review: label, fence info string, and the
--- quoted text (Nothing when the range couldn't be resolved in the worktree).
+-- | A snippet as it appears in the review: label, fence info string, the
+-- label as a comment line in the file's language (Nothing when we don't know
+-- its comment syntax), and the quoted text (Nothing when the range couldn't
+-- be resolved in the worktree).
 data RenderedSnippet = RenderedSnippet
   { label :: Text
   , lang :: Text
+  , commentedLabel :: Maybe Text
   , body :: Maybe Text
   }
 
@@ -808,11 +811,14 @@ extractSnippet :: FilePath -> Snippet -> IO RenderedSnippet
 extractSnippet worktree s = do
   let label = s.file <> ":" <> tshow s.first_line <> "-" <> tshow s.last_line
       path = worktree </> T.unpack s.file
-      lang = case takeExtension (T.unpack s.file) of
+      -- .T files are the Python testsuite driver files.
+      (lang, commentPrefix) = case takeExtension (T.unpack s.file) of
         e
-          | e `elem` [".hs", ".lhs", ".hs-boot"] -> "haskell"
-          | e `elem` [".c", ".h", ".cmm"] -> "c"
-          | otherwise -> ""
+          | e `elem` [".hs", ".lhs", ".hs-boot"] -> ("haskell", Just "-- ")
+          | e `elem` [".c", ".h", ".cmm"] -> ("c", Just "// ")
+          | e `elem` [".py", ".T"] -> ("python", Just "# ")
+          | otherwise -> ("", Nothing)
+      commentedLabel = (<> label) <$> commentPrefix
   exists <- doesFileExist path
   body <-
     if not exists
@@ -827,7 +833,7 @@ extractSnippet worktree s = do
           if null picked
             then Nothing
             else Just (T.unlines (picked ++ ["[snippet truncated]" | truncated]))
-  pure RenderedSnippet {label, lang, body}
+  pure RenderedSnippet {label, lang, commentedLabel, body}
 
 data Report = Report
   { targetDesc :: Text
@@ -864,21 +870,20 @@ renderReview r =
     block (f, v, snips) =
       [ "### " <> f.id <> ": " <> f.title
       , ""
-      , backticked (f.file <> ":" <> tshow f.line)
-      , ""
       ]
         ++ concatMap snippetLines snips
         ++ [ v.writeup
            , ""
            ]
     -- Four-backtick fences, like the ad-hoc appendix, so embedded ``` can't
-    -- break out.
-    snippetLines (s :: RenderedSnippet) =
-      backticked s.label
-        : ""
-        : case s.body of
-          Nothing -> ["_snippet unavailable_", ""]
-          Just b -> ["````" <> s.lang, T.stripEnd b, "````", ""]
+    -- break out. The location goes inside the fence as a comment when we know
+    -- the language's comment syntax; a label line above is the fallback.
+    snippetLines (s :: RenderedSnippet) = case s.body of
+      Nothing -> [backticked s.label, "", "_snippet unavailable_", ""]
+      Just b ->
+        case s.commentedLabel of
+          Just c -> ["````" <> s.lang, c, T.stripEnd b, "````", ""]
+          Nothing -> [backticked s.label, "", "````" <> s.lang, T.stripEnd b, "````", ""]
     headerLines =
       [ "# GlaHiCo review"
       , ""
@@ -1056,7 +1061,8 @@ main = do
         vPrompt
     verdict <- decodeStructured ("verifier f" <> show n) (vBase <> ".envelope.json") run.structured
     BL.writeFile (vBase <> ".json") (AP.encodePretty (embedFinding f verdict))
-    snips <- mapM (extractSnippet resolved.worktree) verdict.snippets
+    -- At most two snippets in the review; the full list stays in the verdict.
+    snips <- mapM (extractSnippet resolved.worktree) (take 2 verdict.snippets)
     pure (f, verdict, snips, run.resolvedModels)
   commit <- glahicoCommit
   dirtyPrompts <- uncommittedPromptFiles

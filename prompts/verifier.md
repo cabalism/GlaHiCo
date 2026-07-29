@@ -36,12 +36,14 @@ Work in this order, and gather concrete evidence at each step:
    plainly what you could and could not establish. The result must be
    specific, clear and readable. Try to be concise without losing readability.
    Also report snippets: line ranges of the code
-   the reader needs to see, in the files as they are in this checkout — at
-   least one, the first being the primary evidence, each short and focused
-   (roughly 5–15 lines). The report extracts these ranges verbatim from the
-   checkout and shows them above your writeup, so reference them from the
-   writeup instead of quoting code at length. For a refuted or irrelevant
-   finding, leave the writeup empty and the snippets list empty.
+   the reader needs to see, in the files as they are in this checkout — one
+   or two, no more, the first being the primary evidence, each short and
+   focused (roughly 5–15 lines). The report extracts these ranges verbatim
+   from the checkout and shows them above your writeup, each headed by a
+   `file:first-last` comment line, so reference them from the writeup by
+   file:line rather than by number, and don't quote code at length. For a
+   refuted or irrelevant finding, leave the writeup empty and the snippets
+   list empty.
 
 Verdict rules: "confirmed" only if step 2 produced a concrete trigger that
 step 1 could not rule out; "refuted" if step 1 produced positive evidence the

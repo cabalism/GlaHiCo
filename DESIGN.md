@@ -123,8 +123,8 @@ read-only worktree access. Its prompt runs three steps in order:
 3. **Relevance**: would a GHC maintainer reviewing this MR care?
 4. **Write up**: for a surviving finding, author the reader-facing writeup —
    self-contained, addressed to the MR author and maintainers, with file:line
-   citations — plus snippet line ranges: the spans of code the reader needs
-   to see.
+   citations — plus snippet line ranges (at most two): the spans of code the
+   reader needs to see.
 
 Output per finding: the evidence from both steps (kept as working notes in the
 run directory), a verdict — `confirmed`, `uncertain`, or `refuted` —
@@ -142,10 +142,11 @@ runs have produced real false positives to put in it.
 ### 3. Report
 
 Assembled mechanically by the script, not by another LLM call: disclosure
-header, then the surviving findings (title, location, code snippets, and the
+header, then the surviving findings (title, code snippets, and the
 verifier's writeup), then the low-confidence section. Snippets are extracted
 by the script from the head checkout at the verifier's chosen line ranges —
-the quoted code is never model output. The finder's claim/evidence and the
+the quoted code is never model output — and each opens with its
+`file:first-last` location as a comment line inside the fence. The finder's claim/evidence and the
 verifier's working notes stay in the run directory for audit.
 
 Disclosure header: glahico commit, model and effort per stage, target SHAs, truncations, and
