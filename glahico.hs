@@ -1145,12 +1145,12 @@ main = do
     decodeStructured "finder" (runDir </> "finder.envelope.json") finderRun.structured
   BL.writeFile (runDir </> "findings.json") (AP.encodePretty (Findings allFindings))
   putStrLn ("Finder reported " <> show (length allFindings) <> " finding(s).")
-  when (length allFindings > 10) $
+  when (length allFindings > 20) $
     warn
       ( "finder reported " <> show (length allFindings)
-          <> " findings; that many usually means noise. Verifying only the first 10."
+          <> " findings; that many usually means noise. Verifying only the first 20."
       )
-  let toVerify = take 10 allFindings
+  let toVerify = take 20 allFindings
       unverifiedN = length allFindings - length toVerify
   verified <- forM (zip [(1 :: Int) ..] toVerify) $ \(n, f) -> do
     putStrLn ("Verifying " <> show n <> "/" <> show (length toVerify) <> ": " <> T.unpack f.title <> " ...")
