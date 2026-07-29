@@ -1148,7 +1148,7 @@ main = do
   when (length allFindings > 20) $
     warn
       ( "finder reported " <> show (length allFindings)
-          <> " findings; that many usually means noise. Verifying only the first 20."
+          <> " findings; verifying only the first 20."
       )
   let toVerify = take 20 allFindings
       unverifiedN = length allFindings - length toVerify
