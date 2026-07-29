@@ -30,21 +30,18 @@ Work in this order, and gather concrete evidence at each step:
 
 4. WRITE UP. If the finding is confirmed, or uncertain and relevant, write the
    text that will be reported to the MR author and maintainers, as a
-   self-contained writeup: what is wrong, why, and the concrete trigger, with
-   file:line citations. Do not restate the steps above, and do not talk about
+   self-contained writeup: what is wrong, why, and the concrete trigger.
+   Clarity and readability is most important. Conciseness is also good.
+   Do not restate the steps above, and do not talk about
    the finder or the verification process. For an uncertain finding, say
-   plainly what you could and could not establish. The result must be
-   specific, clear and readable. Try to be concise without losing readability.
+   plainly what you could and could not establish.
    Also report one snippet: the line range of the code
    the reader most needs to see, in the file as it is in this checkout —
    the primary evidence, short and
    focused (roughly 5–15 lines), with key_line naming the single line at the
-   core of the issue within that range. The report extracts the range verbatim
-   from the checkout and shows it above your writeup, headed by a
-   `file:first-last` comment line and with an arrow comment marking key_line,
-   so reference it from the writeup by
-   file:line rather than by number, and don't quote code at length. For a
-   refuted or irrelevant finding, leave the writeup empty and the snippets
+   core of the issue within that range. This range will be included as a
+   snippet in the final review document.
+   For a refuted or irrelevant finding, leave the writeup empty and the snippets
    list empty.
 
 Verdict rules: "confirmed" only if step 2 produced a concrete trigger that
