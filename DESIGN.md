@@ -1,4 +1,8 @@
-# GaHiCo — LLM code review for GHC merge requests
+# GlaHiCo — LLM code review for GHC merge requests
+
+The name matches "sa-shi-ko" syllable for syllable — a nod to the Linux kernel
+review service this borrows its shape from — and the syllables are Glasgow
+Haskell Compiler.
 
 Status: v2 design, 2026-07-29. Replaces the first draft (now `DESIGN_OLD.md`),
 which specified too much machinery before any code existed. This version keeps
@@ -47,7 +51,7 @@ bundle repo, no feedback machinery in v1.
   branches without involving anyone's MR. Forge-derived context is simply
   absent for these.
 
-GaHiCo owns its own bare mirror of ghc/ghc and a worktree per target, separate
+GlaHiCo owns its own bare mirror of ghc/ghc and a worktree per target, separate
 from Simon's working checkouts. Submodules are initialised.
 
 ## Context pack
@@ -118,9 +122,9 @@ Assembled mechanically by the script, not by another LLM call: disclosure
 header, then the surviving findings (title, location, claim, evidence,
 verifier's supporting evidence), then the low-confidence section.
 
-Disclosure header: gahico commit, model, effort, target SHAs, truncations, and
+Disclosure header: glahico commit, model, effort, target SHAs, truncations, and
 a one-line disclaimer that this is tool output. The prompts live in this
-repository, so the gahico commit *is* the exact-prompt disclosure — reading the
+repository, so the glahico commit *is* the exact-prompt disclosure — reading the
 repo at that commit reproduces every prompt. Ad-hoc per-run prompt additions,
 if ever supported, get inlined verbatim instead.
 
@@ -157,10 +161,8 @@ All of DESIGN_OLD's remaining structure waits for evidence that it's needed:
 
 ## Open questions
 
-1. **Rename to GlaHiCo?** Still open (DESIGN_OLD §13.10). Settle before the
-   script hardcodes a name.
-2. **Harness system prompt vs. "exact prompt".** `claude -p` prepends a system
-   prompt GaHiCo can't reproduce; the disclosure covers what GaHiCo sent.
+1. **Harness system prompt vs. "exact prompt".** `claude -p` prepends a system
+   prompt GlaHiCo can't reproduce; the disclosure covers what GlaHiCo sent.
    Probably just state that limitation in the disclaimer.
-3. **Mailing-list thread outcome.** The 15 replies to the announcement may
+2. **Mailing-list thread outcome.** The 15 replies to the announcement may
    contain agreed constraints not yet reflected here (DESIGN_OLD §13.1).
