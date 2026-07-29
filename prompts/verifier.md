@@ -35,12 +35,14 @@ Work in this order, and gather concrete evidence at each step:
    the finder or the verification process. For an uncertain finding, say
    plainly what you could and could not establish. The result must be
    specific, clear and readable. Try to be concise without losing readability.
-   Also report snippets: line ranges of the code
-   the reader needs to see, in the files as they are in this checkout — one
-   or two, no more, the first being the primary evidence, each short and
-   focused (roughly 5–15 lines). The report extracts these ranges verbatim
-   from the checkout and shows them above your writeup, each headed by a
-   `file:first-last` comment line, so reference them from the writeup by
+   Also report one snippet: the line range of the code
+   the reader most needs to see, in the file as it is in this checkout —
+   the primary evidence, short and
+   focused (roughly 5–15 lines), with key_line naming the single line at the
+   core of the issue within that range. The report extracts the range verbatim
+   from the checkout and shows it above your writeup, headed by a
+   `file:first-last` comment line and with an arrow comment marking key_line,
+   so reference it from the writeup by
    file:line rather than by number, and don't quote code at length. For a
    refuted or irrelevant finding, leave the writeup empty and the snippets
    list empty.

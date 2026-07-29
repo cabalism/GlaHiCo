@@ -641,12 +641,13 @@ verifierSchema =
                     .= object
                       [ "type" .= jstr "object"
                       , "additionalProperties" .= False
-                      , "required" .= map jstr ["file", "first_line", "last_line"]
+                      , "required" .= map jstr ["file", "first_line", "last_line", "key_line"]
                       , "properties"
                           .= object
                             [ "file" .= object ["type" .= jstr "string"]
                             , "first_line" .= object ["type" .= jstr "integer"]
                             , "last_line" .= object ["type" .= jstr "integer"]
+                            , "key_line" .= object ["type" .= jstr "integer"]
                             ]
                       ]
                 ]
@@ -680,10 +681,12 @@ instance ToJSON Findings
 
 -- | A line range the verifier wants shown to the reader; the report quotes
 -- the range from the head checkout rather than trusting model-quoted code.
+-- @key_line@ is the core spot within the range, marked with an arrow comment.
 data Snippet = Snippet
   { file :: Text
   , first_line :: Int
   , last_line :: Int
+  , key_line :: Int
   }
   deriving (Generic, Show)
 
@@ -904,10 +907,18 @@ extractSnippet worktree s = do
             wanted = s.last_line - lo + 1
             picked = take (min snippetCap wanted) (drop (lo - 1) ls)
             truncated = wanted > snippetCap && length picked == snippetCap
+            -- Arrow-comment marker on the key line, when we know the
+            -- language's comment syntax.
+            marked = case commentPrefix of
+              Nothing -> picked
+              Just p ->
+                [ if n == s.key_line then l <> "  " <> T.strip p <> " <==" else l
+                | (n, l) <- zip [lo ..] picked
+                ]
         pure $
           if null picked
             then Nothing
-            else Just (T.unlines (picked ++ ["[snippet truncated]" | truncated]))
+            else Just (T.unlines (marked ++ ["[snippet truncated]" | truncated]))
   pure RenderedSnippet {label, lang, commentedLabel, body}
 
 data Report = Report
@@ -1168,8 +1179,8 @@ main = do
         vPrompt
     verdict <- decodeStructured ("verifier f" <> show n) (vBase <> ".envelope.json") run.structured
     BL.writeFile (vBase <> ".json") (AP.encodePretty (embedFinding f verdict))
-    -- At most two snippets in the review; the full list stays in the verdict.
-    snips <- mapM (extractSnippet resolved.worktree) (take 2 verdict.snippets)
+    -- At most one snippet in the review; the full list stays in the verdict.
+    snips <- mapM (extractSnippet resolved.worktree) (take 1 verdict.snippets)
     pure (f, verdict, snips, run)
   commit <- glahicoCommit
   dirtyPrompts <- uncommittedPromptFiles
