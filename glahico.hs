@@ -613,7 +613,7 @@ verifierSchema =
   object
     [ "type" .= jstr "object"
     , "additionalProperties" .= False
-    , "required" .= map jstr ["verdict", "relevant", "disprove_evidence", "prove_evidence", "relevance_rationale"]
+    , "required" .= map jstr ["verdict", "relevant", "disprove_evidence", "prove_evidence", "relevance_rationale", "writeup"]
     , "properties"
         .= object
           [ "verdict" .= object ["type" .= jstr "string", "enum" .= map jstr ["confirmed", "uncertain", "refuted"]]
@@ -621,6 +621,7 @@ verifierSchema =
           , "disprove_evidence" .= object ["type" .= jstr "string"]
           , "prove_evidence" .= object ["type" .= jstr "string"]
           , "relevance_rationale" .= object ["type" .= jstr "string"]
+          , "writeup" .= object ["type" .= jstr "string"]
           ]
     ]
 
@@ -655,6 +656,7 @@ data Verdict = Verdict
   , disprove_evidence :: Text
   , prove_evidence :: Text
   , relevance_rationale :: Text
+  , writeup :: Text
   }
   deriving (Generic, Show)
 
@@ -795,11 +797,7 @@ renderReview r =
       , ""
       , backticked (f.file <> ":" <> tshow f.line)
       , ""
-      , "**Claim.** " <> f.claim
-      , ""
-      , "**Finder evidence.** " <> f.evidence
-      , ""
-      , "**Verifier evidence.** " <> v.prove_evidence
+      , v.writeup
       , ""
       ]
     headerLines =

@@ -32,8 +32,16 @@ Work in this order, and gather concrete evidence at each step:
    hypotheticals with no reachable trigger, or points already raised in the
    MR discussion.
 
+4. WRITE UP. If the finding is confirmed or uncertain and relevant, write the
+   text that will be reported to the MR author and maintainers, as a
+   self-contained writeup: what is wrong, why, and the concrete trigger, with
+   file:line citations. Do not restate the steps above, and do not talk about
+   the finder or the verification process. For an uncertain finding, say
+   plainly what you could and could not establish. For a refuted or
+   irrelevant finding, leave the writeup empty.
+
 Verdict rules: "confirmed" only if step 2 produced a concrete trigger that
 step 1 could not rule out; "refuted" if step 1 produced positive evidence the
 finding is wrong; "uncertain" otherwise. Report disprove_evidence,
-prove_evidence, and relevance_rationale with file:line citations, and set
-relevant true or false independently of the verdict.
+prove_evidence, relevance_rationale, and writeup, with file:line citations,
+and set relevant true or false independently of the verdict.

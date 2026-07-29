@@ -121,9 +121,13 @@ read-only worktree access. Its prompt runs three steps in order:
 1. **Disprove**: actively try to refute the finding, citing code as evidence.
 2. **Prove**: then try to substantiate it, again with evidence.
 3. **Relevance**: would a GHC maintainer reviewing this MR care?
+4. **Write up**: for a surviving finding, author the reader-facing writeup —
+   self-contained, addressed to the MR author and maintainers, with file:line
+   citations.
 
-Output per finding: the evidence from both steps plus a verdict —
-`confirmed`, `uncertain`, or `refuted` — and `relevant: true/false`.
+Output per finding: the evidence from both steps (kept as working notes in the
+run directory), a verdict — `confirmed`, `uncertain`, or `refuted` —
+`relevant: true/false`, and the writeup.
 
 Kept for the review: confirmed-and-relevant findings in the main section;
 uncertain-but-relevant ones in a clearly labelled low-confidence section.
@@ -137,8 +141,9 @@ runs have produced real false positives to put in it.
 ### 3. Report
 
 Assembled mechanically by the script, not by another LLM call: disclosure
-header, then the surviving findings (title, location, claim, evidence,
-verifier's supporting evidence), then the low-confidence section.
+header, then the surviving findings (title, location, and the verifier's
+writeup), then the low-confidence section. The finder's claim/evidence and
+the verifier's working notes stay in the run directory for audit.
 
 Disclosure header: glahico commit, model and effort per stage, target SHAs, truncations, and
 a one-line disclaimer that this is tool output. The prompts live in this
