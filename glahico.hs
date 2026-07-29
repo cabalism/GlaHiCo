@@ -271,8 +271,8 @@ ensureRemote mirror project = do
     Left _ -> void (capture "git" ["-C", mirror, "remote", "add", name, url])
   pure name
 
-prepareWorktree :: FilePath -> FilePath -> Text -> IO ()
-prepareWorktree srcRepo wt headSha = do
+prepareWorktree :: FilePath -> FilePath -> FilePath -> Text -> IO ()
+prepareWorktree subStores srcRepo wt headSha = do
   exists <- doesDirectoryExist wt
   if exists
     then do
@@ -284,8 +284,67 @@ prepareWorktree srcRepo wt headSha = do
       createDirectoryIfMissing True (takeDirectory wt)
       void (gitIn srcRepo ["worktree", "prune"])
       gitLoud srcRepo ["worktree", "add", "--detach", wt, T.unpack headSha]
-  putStrLn "Initialising submodules ..."
-  gitLoud wt ["submodule", "update", "--init"]
+  initSubmodules subStores wt
+
+submoduleNames :: FilePath -> IO [String]
+submoduleNames wt = do
+  out <- gitOut wt ["config", "-f", ".gitmodules", "--get-regexp", "\\.path$"]
+  pure
+    [ T.unpack n
+    | l <- T.lines out
+    , let key = T.takeWhile (/= ' ') l
+    , Just n <- [T.stripPrefix "submodule." key >>= T.stripSuffix ".path"]
+    ]
+
+{- Note [Fast submodule checkout]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A plain `git submodule update --init` in a fresh worktree clones all ~33 GHC
+submodules from gitlab.haskell.org — minutes per MR. Instead we keep one
+persistent mirror per submodule under <dataDir>/submodules/ (cloned from
+upstream once) and point each `submodule.<name>.url` at it via `-c`, so the
+checkout clones locally in seconds. The overrides are command-line-only; the
+config written by `git submodule init` keeps the canonical URLs.
+
+Stores can lack commits an MR needs (submodule bumps). On failure we fetch
+all stores and retry; if that still fails, `git submodule sync` + a plain
+update falls back to the canonical remotes. The final sync also resets each
+module's origin from the store path back to its canonical URL, so later
+incremental updates in a reused worktree fetch from upstream, not the store.
+-}
+initSubmodules :: FilePath -> FilePath -> IO ()
+initSubmodules stores wt = do
+  hasModules <- doesFileExist (wt </> ".gitmodules")
+  when hasModules $ do
+    putStrLn "Initialising submodules ..."
+    names <- submoduleNames wt
+    void (gitIn wt ["submodule", "init"])
+    cfgs <- fmap concat . forM names $ \n -> do
+      let store = stores </> n
+      storeExists <- doesDirectoryExist store
+      unless storeExists $ do
+        url <- gitIn wt ["config", "submodule." <> n <> ".url"]
+        putStrLn ("One-time setup: mirroring submodule " <> n <> " ...")
+        createDirectoryIfMissing True (takeDirectory store)
+        inherit "git" ["clone", "--mirror", T.unpack url, store]
+      pure ["-c", "submodule." <> n <> ".url=" <> store]
+    let update =
+          tryCapture "git" $
+            ["-C", wt, "-c", "protocol.file.allow=always"]
+              <> cfgs
+              <> ["submodule", "update", "--init", "--jobs", "4"]
+    r <- update >>= \case
+      Right ok -> pure (Right ok)
+      Left _ -> do
+        putStrLn "Refreshing submodule stores ..."
+        forM_ names $ \n ->
+          void (tryCapture "git" ["-C", stores </> n, "fetch", "--prune", "--quiet"])
+        update
+    case r of
+      Right _ -> void (gitIn wt ["submodule", "sync", "--quiet"])
+      Left _ -> do
+        warn "local submodule stores were insufficient; falling back to canonical remotes"
+        void (gitIn wt ["submodule", "sync", "--quiet"])
+        gitLoud wt ["submodule", "update", "--init", "--jobs", "4"]
 
 resolveMr :: FilePath -> Text -> Int -> IO Resolved
 resolveMr dataDir project iid = do
@@ -322,7 +381,7 @@ resolveMr dataDir project iid = do
     _ -> pure ()
   baseSha <- gitIn mirror ["merge-base", "refs/glahico/" <> slug, "refs/glahico/" <> slug <> "-base"]
   let wt = dataDir </> "wt" </> slug
-  prepareWorktree mirror wt headSha
+  prepareWorktree (dataDir </> "submodules") mirror wt headSha
   pure Resolved {slug, worktree = wt, baseSha, headSha, mr = Just (MrData project iid meta)}
 
 resolveLocal :: FilePath -> Text -> IO Resolved
@@ -341,7 +400,7 @@ resolveLocal dataDir spec = do
         "local-" <> takeFileName repo <> "-"
           <> T.unpack (T.take 7 baseSha) <> ".." <> T.unpack (T.take 7 headSha)
       wt = dataDir </> "wt" </> slug
-  prepareWorktree repo wt headSha
+  prepareWorktree (dataDir </> "submodules") repo wt headSha
   pure Resolved {slug, worktree = wt, baseSha, headSha, mr = Nothing}
 
 --------------------------------------------------------------------------------
