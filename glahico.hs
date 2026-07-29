@@ -49,7 +49,7 @@ import Options.Applicative
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getHomeDirectory)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..), die)
-import System.FilePath (takeDirectory, takeFileName, (</>))
+import System.FilePath (takeDirectory, takeExtension, takeFileName, (</>))
 import System.IO (BufferMode (..), hPutStrLn, hSetBuffering, stderr, stdout)
 import System.Process.Typed (nullStream, proc, readProcess, runProcess, setEnv, setStdin, setWorkingDir)
 
@@ -613,7 +613,7 @@ verifierSchema =
   object
     [ "type" .= jstr "object"
     , "additionalProperties" .= False
-    , "required" .= map jstr ["verdict", "relevant", "disprove_evidence", "prove_evidence", "relevance_rationale", "writeup"]
+    , "required" .= map jstr ["verdict", "relevant", "disprove_evidence", "prove_evidence", "relevance_rationale", "writeup", "snippets"]
     , "properties"
         .= object
           [ "verdict" .= object ["type" .= jstr "string", "enum" .= map jstr ["confirmed", "uncertain", "refuted"]]
@@ -622,6 +622,22 @@ verifierSchema =
           , "prove_evidence" .= object ["type" .= jstr "string"]
           , "relevance_rationale" .= object ["type" .= jstr "string"]
           , "writeup" .= object ["type" .= jstr "string"]
+          , "snippets"
+              .= object
+                [ "type" .= jstr "array"
+                , "items"
+                    .= object
+                      [ "type" .= jstr "object"
+                      , "additionalProperties" .= False
+                      , "required" .= map jstr ["file", "first_line", "last_line"]
+                      , "properties"
+                          .= object
+                            [ "file" .= object ["type" .= jstr "string"]
+                            , "first_line" .= object ["type" .= jstr "integer"]
+                            , "last_line" .= object ["type" .= jstr "integer"]
+                            ]
+                      ]
+                ]
           ]
     ]
 
@@ -650,6 +666,19 @@ instance FromJSON Findings
 
 instance ToJSON Findings
 
+-- | A line range the verifier wants shown to the reader; the report quotes
+-- the range from the head checkout rather than trusting model-quoted code.
+data Snippet = Snippet
+  { file :: Text
+  , first_line :: Int
+  , last_line :: Int
+  }
+  deriving (Generic, Show)
+
+instance FromJSON Snippet
+
+instance ToJSON Snippet
+
 data Verdict = Verdict
   { verdict :: Text
   , relevant :: Bool
@@ -657,6 +686,7 @@ data Verdict = Verdict
   , prove_evidence :: Text
   , relevance_rationale :: Text
   , writeup :: Text
+  , snippets :: [Snippet]
   }
   deriving (Generic, Show)
 
@@ -760,6 +790,45 @@ data Stage = Stage
   , ranModels :: [Text]
   }
 
+-- | A snippet as it appears in the review: label, fence info string, and the
+-- quoted text (Nothing when the range couldn't be resolved in the worktree).
+data RenderedSnippet = RenderedSnippet
+  { label :: Text
+  , lang :: Text
+  , body :: Maybe Text
+  }
+
+snippetCap :: Int
+snippetCap = 50
+
+-- | Quote a snippet range from the head worktree. The range is model output,
+-- so a bad path or empty range degrades to an "unavailable" marker instead of
+-- failing the run; ranges are clamped to the file and capped at 'snippetCap'.
+extractSnippet :: FilePath -> Snippet -> IO RenderedSnippet
+extractSnippet worktree s = do
+  let label = s.file <> ":" <> tshow s.first_line <> "-" <> tshow s.last_line
+      path = worktree </> T.unpack s.file
+      lang = case takeExtension (T.unpack s.file) of
+        e
+          | e `elem` [".hs", ".lhs", ".hs-boot"] -> "haskell"
+          | e `elem` [".c", ".h", ".cmm"] -> "c"
+          | otherwise -> ""
+  exists <- doesFileExist path
+  body <-
+    if not exists
+      then pure Nothing
+      else do
+        ls <- T.lines . TE.decodeUtf8Lenient <$> BS.readFile path
+        let lo = max 1 s.first_line
+            wanted = s.last_line - lo + 1
+            picked = take (min snippetCap wanted) (drop (lo - 1) ls)
+            truncated = wanted > snippetCap && length picked == snippetCap
+        pure $
+          if null picked
+            then Nothing
+            else Just (T.unlines (picked ++ ["[snippet truncated]" | truncated]))
+  pure RenderedSnippet {label, lang, body}
+
 data Report = Report
   { targetDesc :: Text
   , baseSha :: Text
@@ -770,7 +839,7 @@ data Report = Report
   , truncations :: [Text]
   , totalFindings :: Int
   , unverified :: Int
-  , verified :: [(Finding, Verdict)]
+  , verified :: [(Finding, Verdict, [RenderedSnippet])]
   , adhocPrompt :: Maybe Text
   , uncommittedPrompts :: [(String, Text)]
   }
@@ -779,8 +848,8 @@ renderReview :: Report -> Text
 renderReview r =
   T.unlines (headerLines ++ findingsSection ++ lowSection ++ adhocSection ++ dirtySection)
   where
-    confirmedRel = [fv | fv@(_, v) <- r.verified, v.verdict == "confirmed", v.relevant]
-    uncertainRel = [fv | fv@(_, v) <- r.verified, v.verdict == "uncertain", v.relevant]
+    confirmedRel = [fv | fv@(_, v, _) <- r.verified, v.verdict == "confirmed", v.relevant]
+    uncertainRel = [fv | fv@(_, v, _) <- r.verified, v.verdict == "uncertain", v.relevant]
     backticked t = "`" <> t <> "`"
     stageLine name (st :: Stage) =
       "- " <> name <> ": requested " <> backticked (T.pack st.alias)
@@ -792,14 +861,24 @@ renderReview r =
             <> tshow (length r.verified) <> " were verified, " <> tshow r.unverified
             <> " remain unverified (preserved in findings.json in the run directory)"
       | otherwise = tshow r.totalFindings <> " reported by the finder, all verified"
-    block (f, v) =
+    block (f, v, snips) =
       [ "### " <> f.id <> ": " <> f.title
       , ""
       , backticked (f.file <> ":" <> tshow f.line)
       , ""
-      , v.writeup
-      , ""
       ]
+        ++ concatMap snippetLines snips
+        ++ [ v.writeup
+           , ""
+           ]
+    -- Four-backtick fences, like the ad-hoc appendix, so embedded ``` can't
+    -- break out.
+    snippetLines (s :: RenderedSnippet) =
+      backticked s.label
+        : ""
+        : case s.body of
+          Nothing -> ["_snippet unavailable_", ""]
+          Just b -> ["````" <> s.lang, T.stripEnd b, "````", ""]
     headerLines =
       [ "# GlaHiCo review"
       , ""
@@ -977,7 +1056,8 @@ main = do
         vPrompt
     verdict <- decodeStructured ("verifier f" <> show n) (vBase <> ".envelope.json") run.structured
     BL.writeFile (vBase <> ".json") (AP.encodePretty (embedFinding f verdict))
-    pure (f, verdict, run.resolvedModels)
+    snips <- mapM (extractSnippet resolved.worktree) verdict.snippets
+    pure (f, verdict, snips, run.resolvedModels)
   commit <- glahicoCommit
   dirtyPrompts <- uncommittedPromptFiles
   let targetDesc = case resolved.mr of
@@ -993,11 +1073,11 @@ main = do
           , commit
           , finderStage = Stage opts.finderModel opts.finderEffort finderRun.resolvedModels
           , verifierStage =
-              Stage opts.verifierModel opts.verifierEffort (nub (concat [ms | (_, _, ms) <- verified]))
+              Stage opts.verifierModel opts.verifierEffort (nub (concat [ms | (_, _, _, ms) <- verified]))
           , truncations = truncs
           , totalFindings = length allFindings
           , unverified = unverifiedN
-          , verified = [(f, v) | (f, v, _) <- verified]
+          , verified = [(f, v, s) | (f, v, s, _) <- verified]
           , adhocPrompt = adhocText
           , uncommittedPrompts = dirtyPrompts
           }
