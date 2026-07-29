@@ -34,7 +34,8 @@ Work in this order, and gather concrete evidence at each step:
    file:line citations. Do not restate the steps above, and do not talk about
    the finder or the verification process. For an uncertain finding, say
    plainly what you could and could not establish. The result must be
-   specific, clear and readable. Also report snippets: line ranges of the code
+   specific, clear and readable. Try to be concise without losing readability.
+   Also report snippets: line ranges of the code
    the reader needs to see, in the files as they are in this checkout — at
    least one, the first being the primary evidence, each short and focused
    (roughly 5–15 lines). The report extracts these ranges verbatim from the
