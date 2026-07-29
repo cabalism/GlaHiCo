@@ -37,8 +37,8 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Char (isDigit)
 import Data.Foldable (toList)
 import Data.IORef (modifyIORef', newIORef, readIORef)
-import Data.List (intercalate, isPrefixOf, nub, stripPrefix)
-import Data.Maybe (catMaybes, fromMaybe, isJust)
+import Data.List (intercalate, isInfixOf, isPrefixOf, nub, stripPrefix)
+import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe, maybeToList)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -74,7 +74,7 @@ optsP =
     <$> strArgument
       (metavar "TARGET" <> help "MR number (14892 or !14892), gitlab.haskell.org MR URL, or local commit range (BASE..HEAD)")
     <*> strOption
-      (long "finder-model" <> metavar "ALIAS" <> value "fable" <> showDefault <> help "Model for the finder stage")
+      (long "finder-model" <> metavar "ALIAS" <> value "opus" <> showDefault <> help "Model for the finder stage")
     <*> strOption
       (long "verifier-model" <> metavar "ALIAS" <> value "opus" <> showDefault <> help "Model for the verifier stage")
     <*> effortOption "finder-effort" "Effort level for the finder stage"
@@ -128,6 +128,13 @@ parseMrUrl rest
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show
+
+-- | Render a non-negative number with thousands separators: 35742 → "35,742".
+commaSep :: Int -> Text
+commaSep = T.pack . reverse . intercalate "," . chunk . reverse . show
+  where
+    chunk [] = []
+    chunk s = take 3 s : chunk (drop 3 s)
 
 warn :: String -> IO ()
 warn s = hPutStrLn stderr ("Warning: " <> s)
@@ -185,6 +192,11 @@ vKey _ _ = Nothing
 vText :: Key.Key -> Value -> Maybe Text
 vText k v = case vKey k v of
   Just (String t) -> Just t
+  _ -> Nothing
+
+vInt :: Key.Key -> Value -> Maybe Int
+vInt k v = case vKey k v of
+  Just (Number n) -> Just (round n)
   _ -> Nothing
 
 vArray :: Key.Key -> Value -> [Value]
@@ -712,7 +724,37 @@ decodeStructured what envelopePath v = case A.fromJSON v of
 -- runClaude
 --------------------------------------------------------------------------------
 
-data ClaudeRun = ClaudeRun {structured :: Value, resolvedModels :: [Text]}
+-- | Token counts for one model within one claude call (or summed over calls).
+data ModelTokens = ModelTokens
+  { input :: Int
+  , cacheCreation :: Int
+  , cacheRead :: Int
+  , output :: Int
+  }
+
+addTokens :: ModelTokens -> ModelTokens -> ModelTokens
+addTokens a b =
+  ModelTokens
+    { input = a.input + b.input
+    , cacheCreation = a.cacheCreation + b.cacheCreation
+    , cacheRead = a.cacheRead + b.cacheRead
+    , output = a.output + b.output
+    }
+
+-- | Sum per-call usage lists into one per-model list (first-seen model order).
+sumUsage :: [[(Text, ModelTokens)]] -> [(Text, ModelTokens)]
+sumUsage uss =
+  [ (m, foldr1 addTokens [t | (m', t) <- pairs, m' == m])
+  | m <- nub (map fst pairs)
+  ]
+  where
+    pairs = concat uss
+
+data ClaudeRun = ClaudeRun
+  { structured :: Value
+  , usage :: [(Text, ModelTokens)]
+  , finalContext :: Maybe Int
+  }
 
 allowedGitTools :: [String]
 allowedGitTools =
@@ -775,10 +817,31 @@ runClaude wt ctxDir envelopePath model effort schema prompt = do
   structured <- case vKey "structured_output" v of
     Just s | s /= Null -> pure s
     _ -> failWith "claude result envelope has no structured_output"
-  let models = case vKey "modelUsage" v of
-        Just (Object o) -> map Key.toText (KM.keys o)
+  let i k mv = fromMaybe 0 (vInt k mv)
+      usage = case vKey "modelUsage" v of
+        Just (Object o) ->
+          [ ( Key.toText k
+            , ModelTokens
+                { input = i "inputTokens" mv
+                , cacheCreation = i "cacheCreationInputTokens" mv
+                , cacheRead = i "cacheReadInputTokens" mv
+                , output = i "outputTokens" mv
+                }
+            )
+          | (k, mv) <- KM.toList o
+          ]
         _ -> []
-  pure ClaudeRun {structured, resolvedModels = models}
+      -- The last request's input + cache tokens approximate the final context
+      -- size; fall back to the call totals when iterations are absent.
+      finalContext = do
+        u <- vKey "usage" v
+        let src = case vArray "iterations" u of
+              [] -> u
+              its -> last its
+        case mapMaybe (`vInt` src) ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"] of
+          [] -> Nothing
+          xs -> Just (sum xs)
+  pure ClaudeRun {structured, usage, finalContext}
 
 --------------------------------------------------------------------------------
 -- Report
@@ -787,8 +850,20 @@ runClaude wt ctxDir envelopePath model effort schema prompt = do
 data Stage = Stage
   { alias :: String
   , effortLevel :: String
-  , ranModels :: [Text]
+  , ranUsage :: [(Text, ModelTokens)]
+  , finalContexts :: [Int] -- one entry per claude call in this stage
   }
+
+-- | The harness makes auxiliary calls with haiku; the disclosure omits those
+-- unless haiku itself was requested. If filtering would empty a non-empty
+-- list, keep it unfiltered rather than claiming the stage ran no calls.
+disclosedUsage :: String -> [(Text, ModelTokens)] -> [(Text, ModelTokens)]
+disclosedUsage alias us
+  | "haiku" `isInfixOf` alias = us
+  | null filtered = us
+  | otherwise = filtered
+  where
+    filtered = [u | u@(m, _) <- us, not ("haiku" `T.isInfixOf` m)]
 
 -- | A snippet as it appears in the review: label, fence info string, the
 -- label as a comment line in the file's language (Nothing when we don't know
@@ -860,7 +935,18 @@ renderReview r =
     stageLine name (st :: Stage) =
       "- " <> name <> ": requested " <> backticked (T.pack st.alias)
         <> " at effort " <> backticked (T.pack st.effortLevel) <> "; ran "
-        <> (if null st.ranModels then "no calls" else T.intercalate ", " (map backticked st.ranModels))
+        <> ranPart st.ranUsage
+        <> contextPart st.finalContexts
+    ranPart [] = "no calls"
+    ranPart us = T.intercalate ", " [backticked m <> " (" <> tokensText t <> ")" | (m, t) <- us]
+    tokensText (t :: ModelTokens) =
+      commaSep (t.input + t.cacheCreation + t.cacheRead) <> " tokens in ("
+        <> commaSep t.cacheRead <> " cache reads), " <> commaSep t.output <> " out"
+    contextPart [] = ""
+    contextPart [c] = "; final context ≈" <> commaSep c <> " tokens"
+    contextPart cs =
+      "; final context ≈" <> commaSep (maximum cs) <> " tokens max across "
+        <> tshow (length cs) <> " calls"
     findingsLine
       | r.unverified > 0 =
           tshow r.totalFindings <> " reported by the finder; only the first "
@@ -1063,7 +1149,7 @@ main = do
     BL.writeFile (vBase <> ".json") (AP.encodePretty (embedFinding f verdict))
     -- At most two snippets in the review; the full list stays in the verdict.
     snips <- mapM (extractSnippet resolved.worktree) (take 2 verdict.snippets)
-    pure (f, verdict, snips, run.resolvedModels)
+    pure (f, verdict, snips, run)
   commit <- glahicoCommit
   dirtyPrompts <- uncommittedPromptFiles
   let targetDesc = case resolved.mr of
@@ -1077,9 +1163,18 @@ main = do
           , baseSha = resolved.baseSha
           , headSha = resolved.headSha
           , commit
-          , finderStage = Stage opts.finderModel opts.finderEffort finderRun.resolvedModels
+          , finderStage =
+              Stage
+                opts.finderModel
+                opts.finderEffort
+                (disclosedUsage opts.finderModel finderRun.usage)
+                (maybeToList finderRun.finalContext)
           , verifierStage =
-              Stage opts.verifierModel opts.verifierEffort (nub (concat [ms | (_, _, _, ms) <- verified]))
+              Stage
+                opts.verifierModel
+                opts.verifierEffort
+                (disclosedUsage opts.verifierModel (sumUsage [run.usage | (_, _, _, run) <- verified]))
+                (mapMaybe (\(_, _, _, run) -> run.finalContext) verified)
           , truncations = truncs
           , totalFindings = length allFindings
           , unverified = unverifiedN
