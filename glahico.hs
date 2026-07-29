@@ -214,19 +214,23 @@ glabJson endpoint =
   tryGlabJson endpoint
     >>= either (\e -> die ("glab api " <> endpoint <> " failed:\n" <> T.unpack e)) pure
 
-glabPaged :: String -> Int -> IO [Value]
+-- | Fetch up to @maxPages@ pages; the 'Bool' reports whether the page cap cut
+-- the result short (a truncation the byte caps cannot see).
+glabPaged :: String -> Int -> IO ([Value], Bool)
 glabPaged endpoint maxPages = go 1
   where
     sep = if '?' `elem` endpoint then "&" else "?"
-    go :: Int -> IO [Value]
+    go :: Int -> IO ([Value], Bool)
     go n
-      | n > maxPages = pure []
+      | n > maxPages = pure ([], True)
       | otherwise = do
           v <- glabJson (endpoint <> sep <> "per_page=100&page=" <> show n)
           case v of
             Array xs ->
               let items = toList xs
-               in if length items < 100 then pure items else (items ++) <$> go (n + 1)
+               in if length items < 100
+                    then pure (items, False)
+                    else (\(more, capped) -> (items ++ more, capped)) <$> go (n + 1)
             _ -> die ("glab api " <> endpoint <> ": expected a JSON array")
 
 --------------------------------------------------------------------------------
@@ -444,7 +448,10 @@ buildContext res runDir = do
     let enc = urlEncodeProject md.project
     putCapped (ctx </> "mr.md") "mr.md" (50 * 1024) (mrMarkdown md)
     putStrLn "Fetching MR discussion ..."
-    discussions <- glabPaged ("projects/" <> enc <> "/merge_requests/" <> show md.iid <> "/discussions") 5
+    (discussions, discCapped) <-
+      glabPaged ("projects/" <> enc <> "/merge_requests/" <> show md.iid <> "/discussions") 5
+    when discCapped $
+      modifyIORef' truncsRef (++ ["discussion.md: more than 5 pages of discussions, remainder omitted"])
     putCapped (ctx </> "discussion.md") "discussion.md" (200 * 1024) (discussionMarkdown discussions)
     let refs = nub (issueRefs commits ++ issueRefs (fromMaybe "" (vText "description" md.meta)))
     when (length refs > 5) $
@@ -462,6 +469,10 @@ buildContext res runDir = do
           let notes = case eNotes of
                 Right (Array xs) -> toList xs
                 _ -> []
+          when (length notes == 100) $
+            modifyIORef'
+              truncsRef
+              (++ [T.pack ("issues/" <> show n <> ".md") <> ": only the first page (100) of comments fetched"])
           putCapped
             (ctx </> "issues" </> show n <> ".md")
             (T.pack ("issues/" <> show n <> ".md"))
