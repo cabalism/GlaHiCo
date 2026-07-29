@@ -50,6 +50,15 @@ spots. Settable per run (`--finder-model`, `--verifier-model`, likewise for
 effort) with defaults in the script; all verifiers in a run share one setting.
 Whatever ran is recorded per stage in the disclosure header.
 
+### Custom prompts
+
+`--prompt TEXT` / `--prompt-file PATH` **append** extra instructions to the
+finder prompt — no templating, no overriding the built-in prompt. Typical use:
+"pay special attention to X" for a particular MR. The verifier prompt is not
+touched: it stays the same neutral filter regardless of what the finder was
+steered towards. Ad-hoc prompts are in no commit, so they are disclosed by
+value: inlined verbatim in an appendix of `review.md`.
+
 ### Targets
 
 - An MR number (`14892`, `!14892`) in ghc/ghc, fetched via
@@ -134,8 +143,9 @@ verifier's supporting evidence), then the low-confidence section.
 Disclosure header: glahico commit, model and effort per stage, target SHAs, truncations, and
 a one-line disclaimer that this is tool output. The prompts live in this
 repository, so the glahico commit *is* the exact-prompt disclosure — reading the
-repo at that commit reproduces every prompt. Ad-hoc per-run prompt additions,
-if ever supported, get inlined verbatim instead.
+repo at that commit reproduces every prompt. Ad-hoc additions from
+`--prompt`/`--prompt-file` are in no commit and are inlined verbatim in an
+appendix instead; most runs use none and have no appendix.
 
 ## Run directory
 
