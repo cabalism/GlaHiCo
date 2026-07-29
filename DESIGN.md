@@ -41,6 +41,15 @@ Publication is manual: Simon reads nothing into the MR that the tool didn't
 write, but he pastes it (or a snippet link) himself. No snippet automation, no
 bundle repo, no feedback machinery in v1.
 
+### Models
+
+Finder and verifier take **separate model (and effort) settings**, e.g. Fable
+for the finder and Opus 4.8 for verification — the stages have different jobs
+and different cost profiles, and mixing models also decorrelates their blind
+spots. Settable per run (`--finder-model`, `--verifier-model`, likewise for
+effort) with defaults in the script; all verifiers in a run share one setting.
+Whatever ran is recorded per stage in the disclosure header.
+
 ### Targets
 
 - An MR number (`14892`, `!14892`) in ghc/ghc, fetched via
@@ -122,7 +131,7 @@ Assembled mechanically by the script, not by another LLM call: disclosure
 header, then the surviving findings (title, location, claim, evidence,
 verifier's supporting evidence), then the low-confidence section.
 
-Disclosure header: glahico commit, model, effort, target SHAs, truncations, and
+Disclosure header: glahico commit, model and effort per stage, target SHAs, truncations, and
 a one-line disclaimer that this is tool output. The prompts live in this
 repository, so the glahico commit *is* the exact-prompt disclosure — reading the
 repo at that commit reproduces every prompt. Ad-hoc per-run prompt additions,
