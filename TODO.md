@@ -2,9 +2,11 @@
 
 Observations from the 2026-07-29 implementation session (branch `glahico-script`):
 
-- Invite feedback near the top of the review document
+- Near the title, mention HEAD commit and when the review was generated
 
 - Simon needs to test prompt additions!
+
+- Add a command that reruns the report generation on existing review artifacts
 
 - Consider (network) access via glab so the agents can lookup relevant issues.
 

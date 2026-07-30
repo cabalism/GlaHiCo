@@ -948,7 +948,7 @@ headingAnchor =
 renderReview :: Report -> Text
 renderReview r =
   T.unlines
-    ( headerLines ++ findingsSection ++ lowSection ++ adhocSection
+    ( headerLines ++ feedbackLines ++ findingsSection ++ lowSection ++ adhocSection
         ++ dirtySection ++ disclosureSection ++ disclaimerLines
     )
   where
@@ -1015,6 +1015,12 @@ renderReview r =
           Just c -> ["````" <> s.lang, c, T.stripEnd b, "````", ""]
           Nothing -> [backticked s.label, "", "````" <> s.lang, T.stripEnd b, "````", ""]
     headerLines = ["# GlaHiCo review: " <> r.titleSuffix, ""] ++ summaryLines
+    feedbackLines =
+      [ "_Your feedback can help to make this service better! A quick reply"
+          <> " like `f1: noise, f2: false positive` helps, and so does"
+          <> " pointing out anything the review missed._"
+      , ""
+      ]
     summaryLines
       | null confirmedRel && null uncertainRel =
           [ if r.totalFindings == 0
