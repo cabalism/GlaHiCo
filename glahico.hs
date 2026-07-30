@@ -975,7 +975,7 @@ renderReview r =
           tshow r.totalFindings <> " reported by the finder; "
             <> T.intercalate "; " (outcomeParts ++ unverifiedParts)
     outcomeParts =
-      [tshow (length confirmedRel) <> " confirmed" | not (null confirmedRel)]
+      [tshow (length confirmedRel) <> " high-confidence" | not (null confirmedRel)]
         ++ [ tshow (length uncertainRel) <> " uncertain but judged relevant (included as low-confidence)"
            | not (null uncertainRel)
            ]
@@ -1015,26 +1015,28 @@ renderReview r =
           Nothing -> [backticked s.label, "", "````" <> s.lang, T.stripEnd b, "````", ""]
     headerLines = ["# GlaHiCo review", ""] ++ summaryLines
     summaryLines
-      | null confirmedRel =
+      | null confirmedRel && null uncertainRel =
           [ if r.totalFindings == 0
               then "_The finder reported no findings._"
-              else
-                if null uncertainRel
-                  then "_No findings survived verification._"
-                  else "_No confirmed findings; see the low-confidence section below._"
+              else "_No findings survived verification._"
           , ""
           ]
       | otherwise =
-          "Confirmed findings:"
+          linkGroup "High-confidence findings:" confirmedRel
+            ++ linkGroup "Low-confidence findings:" uncertainRel
+    linkGroup label fvs
+      | null fvs = []
+      | otherwise =
+          label
             : ""
             : [ "- [" <> heading <> "](#" <> headingAnchor heading <> ")"
-              | (f, _, _) <- confirmedRel
+              | (f, _, _) <- fvs
               , let heading = f.id <> ": " <> f.title
               ]
             ++ [""]
     findingsSection
       | null confirmedRel = []
-      | otherwise = "## Findings" : "" : concatMap block confirmedRel
+      | otherwise = "## High-confidence findings" : "" : concatMap block confirmedRel
     disclosureSection =
       [ "## Disclosure"
       , ""
