@@ -34,7 +34,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
-import Data.Char (isDigit)
+import Data.Char (isAlphaNum, isDigit, toLower)
 import Data.Foldable (toList)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (intercalate, isInfixOf, isPrefixOf, nub, stripPrefix)
@@ -936,9 +936,20 @@ data Report = Report
   , uncommittedPrompts :: [(String, Text)]
   }
 
+-- GitLab/GitHub heading anchor: lowercase, drop everything that isn't
+-- alphanumeric, space, hyphen or underscore, then spaces become hyphens.
+headingAnchor :: Text -> Text
+headingAnchor =
+  T.map (\c -> if c == ' ' then '-' else c)
+    . T.filter (\c -> isAlphaNum c || c `elem` (" -_" :: String))
+    . T.map toLower
+
 renderReview :: Report -> Text
 renderReview r =
-  T.unlines (headerLines ++ findingsSection ++ lowSection ++ adhocSection ++ dirtySection ++ disclaimerLines)
+  T.unlines
+    ( headerLines ++ findingsSection ++ lowSection ++ adhocSection
+        ++ dirtySection ++ disclosureSection ++ disclaimerLines
+    )
   where
     confirmedRel = [fv | fv@(_, v, _) <- r.verified, v.verdict == "confirmed", v.relevant]
     uncertainRel = [fv | fv@(_, v, _) <- r.verified, v.verdict == "uncertain", v.relevant]
@@ -1002,10 +1013,30 @@ renderReview r =
         case s.commentedLabel of
           Just c -> ["````" <> s.lang, c, T.stripEnd b, "````", ""]
           Nothing -> [backticked s.label, "", "````" <> s.lang, T.stripEnd b, "````", ""]
-    headerLines =
-      [ "# GlaHiCo review"
-      , ""
-      , "## Disclosure"
+    headerLines = ["# GlaHiCo review", ""] ++ summaryLines
+    summaryLines
+      | null confirmedRel =
+          [ if r.totalFindings == 0
+              then "_The finder reported no findings._"
+              else
+                if null uncertainRel
+                  then "_No findings survived verification._"
+                  else "_No confirmed findings; see the low-confidence section below._"
+          , ""
+          ]
+      | otherwise =
+          "Confirmed findings:"
+            : ""
+            : [ "- [" <> heading <> "](#" <> headingAnchor heading <> ")"
+              | (f, _, _) <- confirmedRel
+              , let heading = f.id <> ": " <> f.title
+              ]
+            ++ [""]
+    findingsSection
+      | null confirmedRel = []
+      | otherwise = "## Findings" : "" : concatMap block confirmedRel
+    disclosureSection =
+      [ "## Disclosure"
       , ""
       , "- GlaHiCo commit: " <> backticked r.commit <> " (the prompts are part of the repository at this commit)"
       , "- Target: " <> r.targetDesc
@@ -1017,21 +1048,6 @@ renderReview r =
       , "- Findings: " <> findingsLine
       , ""
       ]
-    findingsSection =
-      "## Findings"
-        : ""
-        : ( if null confirmedRel
-              then
-                [ if r.totalFindings == 0
-                    then "_The finder reported no findings._"
-                    else
-                      if null uncertainRel
-                        then "_No findings survived verification._"
-                        else "_No confirmed findings; see the low-confidence section below._"
-                , ""
-                ]
-              else concatMap block confirmedRel
-          )
     lowSection
       | null uncertainRel = []
       | otherwise =
