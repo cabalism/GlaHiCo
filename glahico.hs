@@ -923,6 +923,7 @@ extractSnippet worktree s = do
 
 data Report = Report
   { targetDesc :: Text
+  , titleSuffix :: Text
   , baseSha :: Text
   , headSha :: Text
   , commit :: Text
@@ -1013,7 +1014,7 @@ renderReview r =
         case s.commentedLabel of
           Just c -> ["````" <> s.lang, c, T.stripEnd b, "````", ""]
           Nothing -> [backticked s.label, "", "````" <> s.lang, T.stripEnd b, "````", ""]
-    headerLines = ["# GlaHiCo review", ""] ++ summaryLines
+    headerLines = ["# GlaHiCo review: " <> r.titleSuffix, ""] ++ summaryLines
     summaryLines
       | null confirmedRel && null uncertainRel =
           [ if r.totalFindings == 0
@@ -1208,9 +1209,14 @@ main = do
           "[" <> md.project <> "!" <> tshow md.iid
             <> "](https://gitlab.haskell.org/" <> md.project <> "/-/merge_requests/" <> tshow md.iid <> ")"
         Nothing -> "local range " <> T.pack opts.target
+      titleSuffix = case resolved.mr of
+        Just md ->
+          fromMaybe "(no title)" (vText "title" md.meta) <> " (!" <> tshow md.iid <> ")"
+        Nothing -> "local range " <> T.pack opts.target
       report =
         Report
           { targetDesc
+          , titleSuffix
           , baseSha = resolved.baseSha
           , headSha = resolved.headSha
           , commit

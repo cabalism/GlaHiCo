@@ -2,7 +2,7 @@
 
 Observations from the 2026-07-29 implementation session (branch `glahico-script`):
 
-- Include MR number and title in the review title
+- Invite feedback near the top of the review document
 
 - Simon needs to test prompt additions!
 
