@@ -2,6 +2,8 @@
 
 Observations from the 2026-07-29 implementation session (branch `glahico-script`):
 
+- Include MR number and title in the review title
+
 - Consider (network) access via glab so the agents can lookup relevant issues.
 
 - **Finder prompt references `discussion.md` on local runs.** The sentence
