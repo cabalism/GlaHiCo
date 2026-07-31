@@ -88,10 +88,10 @@ Access tokens; role Developer, scope `api`): it authenticates as a bot
 member of that one project and can't touch anything else.
 
 Save the token where processes running as your user — coding agents
-included — cannot read it:
+included — cannot read it. Paste it into `~/glahico/gitlab-token` with an
+editor (a shell `echo` would leave the token in your history), then:
 
 ```sh
-echo glpat-... > ~/glahico/gitlab-token
 sudo chown root:root ~/glahico/gitlab-token
 sudo chmod 600 ~/glahico/gitlab-token
 ```
