@@ -63,9 +63,12 @@ machinery in v1.
   prompt. Anything uncommitted (ad-hoc `--prompt` text, dirty prompt files)
   is instead disclosed by value, inlined verbatim in a review appendix.
 - **Read-only agents.** Read, grep, and git inspection in a dedicated
-  worktree; no build, no test runs, no writes, no network. Enforced by the
-  harness tool allowlist. Together with a public-project check on the target,
-  this makes "only public context reaches the provider" true by construction.
+  worktree; no build, no test runs, no writes, no network. The harness tool
+  allowlist restricts agents to read-oriented git subcommands — a strong
+  default rather than a hard guarantee, since a few permitted flags (`git
+  grep -O`, `--output` on diff/log) could in principle execute a command or
+  write a file. Together with a public-project check on the target, this
+  makes "only public context reaches the provider" true by construction.
 - **No false-positive guide yet.** The verifier prompt carries only generic
   noise guidance; a standing guide file gets created **from data**, once real
   runs have produced real false positives to put in it.

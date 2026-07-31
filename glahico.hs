@@ -388,7 +388,7 @@ prepareWorktree subStores srcRepo wt headSha = do
     then do
       dirty <- gitIn wt ["status", "--porcelain"]
       unless (T.null dirty) $
-        warn ("worktree " <> wt <> " is dirty; agents are read-only, so this is unexpected. Not cleaning up.")
+        warn ("worktree " <> wt <> " is dirty; agents are not expected to write to it. Not cleaning up.")
       void (gitIn wt ["checkout", "--detach", T.unpack headSha])
     else do
       createDirectoryIfMissing True (takeDirectory wt)
