@@ -287,6 +287,10 @@ publishProject = "sjakobi%2FGlaHiCo"
 -- | Snippet creation needs a write-capable token (scope @api@); the
 -- glab-configured token is read-only by design. glab prefers GITLAB_TOKEN
 -- over its config, so only this step gains write access.
+--
+-- The token file is root-owned so that agents running as the user cannot
+-- read it; sudo prompts for the password on the controlling tty (and fails
+-- immediately when there is none, i.e. in agent-spawned processes).
 publishToken :: FilePath -> IO String
 publishToken dataDir = do
   let path = dataDir </> "gitlab-token"
@@ -294,11 +298,13 @@ publishToken dataDir = do
   unless exists $
     die
       ( path <> " not found.\n"
-          <> "Create a personal access token with scope `api` at\n"
-          <> "https://gitlab.haskell.org/-/user_settings/personal_access_tokens\n"
-          <> "and save it there (single line, chmod 600)."
+          <> "Create an access token with scope `api` (a project access token on\n"
+          <> "sjakobi/GlaHiCo is preferred over a personal one), save it there\n"
+          <> "(single line), then make it root-only:\n"
+          <> "  sudo chown root:root " <> path <> " && sudo chmod 600 " <> path
       )
-  T.unpack . T.strip <$> TIO.readFile path
+  putStrLn "Reading token (sudo will prompt for your password) ..."
+  T.unpack . T.strip . lbsText <$> capture "sudo" ["cat", path]
 
 runPublish :: FilePath -> FilePath -> IO ()
 runPublish dataDir runDir = do
