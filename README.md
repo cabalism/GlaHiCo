@@ -6,7 +6,7 @@ runs a finder agent to look for correctness bugs, verifies each finding with
 an independent verifier agent, and mechanically assembles a `review.md` with
 a full disclosure header. Published reviews are available as
 [snippets on sjakobi/GlaHiCo](https://gitlab.haskell.org/sjakobi/GlaHiCo/-/snippets).
-See `DESIGN.md` for the rationale and details.
+See `DESIGN.md` for the rationale.
 
 ## Prerequisites
 
