@@ -4,7 +4,9 @@ Opt-in LLM code review for GHC merge requests. GlaHiCo assembles a context
 pack for an MR (diff, commits, description, discussion, referenced issues),
 runs a finder agent to look for correctness bugs, verifies each finding with
 an independent verifier agent, and mechanically assembles a `review.md` with
-a full disclosure header. See `DESIGN.md` for the rationale and details.
+a full disclosure header. Published reviews are available as
+[snippets on sjakobi/GlaHiCo](https://gitlab.haskell.org/sjakobi/GlaHiCo/-/snippets).
+See `DESIGN.md` for the rationale and details.
 
 ## Prerequisites
 
