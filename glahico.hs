@@ -149,6 +149,9 @@ parseMrUrl rest
 tshow :: Show a => a -> Text
 tshow = T.pack . show
 
+dup :: a -> (a, a)
+dup x = (x, x)
+
 -- | Render a non-negative number with thousands separators: 35742 → "35,742".
 commaSep :: Int -> Text
 commaSep = T.pack . reverse . intercalate "," . chunk . reverse . show
@@ -1244,19 +1247,20 @@ runReview dataDir opts = do
     pure (f, verdict, snips, run)
   commit <- glahicoCommit
   dirtyPrompts <- uncommittedPromptFiles
-  let localDesc
-        | ".." `T.isInfixOf` T.pack opts.target = "local range " <> T.pack opts.target
-        | otherwise = "local commit " <> T.pack opts.target
-      targetDesc = case resolved.mr of
-        Just md ->
-          "[" <> md.project <> "!" <> tshow md.iid
+  (targetDesc, titleSuffix) <- case resolved.mr of
+    Just md ->
+      pure
+        ( "[" <> md.project <> "!" <> tshow md.iid
             <> "](https://gitlab.haskell.org/" <> md.project <> "/-/merge_requests/" <> tshow md.iid <> ")"
-        Nothing -> localDesc
-      titleSuffix = case resolved.mr of
-        Just md ->
-          fromMaybe "(no title)" (vText "title" md.meta) <> " (!" <> tshow md.iid <> ")"
-        Nothing -> localDesc
-      report =
+        , fromMaybe "(no title)" (vText "title" md.meta) <> " (!" <> tshow md.iid <> ")"
+        )
+    Nothing
+      | ".." `T.isInfixOf` T.pack opts.target ->
+          pure (dup ("local range " <> T.pack opts.target))
+      | otherwise -> do
+          subject <- gitIn resolved.worktree ["log", "-1", "--format=%s", T.unpack resolved.headSha]
+          pure (dup (subject <> " (" <> T.take 7 resolved.headSha <> ")"))
+  let report =
         Report
           { targetDesc
           , titleSuffix
