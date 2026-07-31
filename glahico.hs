@@ -1029,7 +1029,7 @@ extractSnippet worktree s = do
             marked = case commentPrefix of
               Nothing -> picked
               Just p ->
-                [ if n == s.key_line then l <> "  " <> T.strip p <> " <==" else l
+                [ if n == s.key_line then l <> "  " <> T.strip p <> " <========== HERE" else l
                 | (n, l) <- zip [lo ..] picked
                 ]
         pure $
