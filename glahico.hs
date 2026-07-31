@@ -51,13 +51,15 @@ import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..), die)
 import System.FilePath (takeDirectory, takeExtension, takeFileName, (</>))
 import System.IO (BufferMode (..), hPutStrLn, hSetBuffering, stderr, stdout)
-import System.Process.Typed (nullStream, proc, readProcess, runProcess, setEnv, setStdin, setWorkingDir)
+import System.Process.Typed (byteStringInput, nullStream, proc, readProcess, runProcess, setEnv, setStdin, setWorkingDir)
 
 --------------------------------------------------------------------------------
 -- Options & CLI
 --------------------------------------------------------------------------------
 
 data Adhoc = AdhocText Text | AdhocFile FilePath
+
+data Cmd = ReviewCmd Opts | PublishCmd FilePath
 
 data Opts = Opts
   { target :: String
@@ -67,6 +69,22 @@ data Opts = Opts
   , verifierEffort :: String
   , adhoc :: Maybe Adhoc
   }
+
+-- | @glahico publish RUN_DIR@ is a subcommand; a bare TARGET still reviews.
+-- No real target collides with the literal word "publish" (targets are
+-- digits, !N, URLs, or ..-ranges), so the fallback is unambiguous.
+cmdP :: Parser Cmd
+cmdP =
+  hsubparser
+    ( command
+        "publish"
+        ( info
+            (PublishCmd <$> strArgument (metavar "RUN_DIR" <> help "Run directory containing review.md"))
+            (progDesc "Publish a run's review.md as a GitLab snippet")
+        )
+        <> metavar "publish"
+    )
+    <|> (ReviewCmd <$> optsP)
 
 optsP :: Parser Opts
 optsP =
@@ -154,6 +172,19 @@ tryCapture cmd args = do
   pure $ case ec of
     ExitSuccess -> Right out
     ExitFailure n -> Left ("exit code " <> tshow n <> "\n" <> lbsText err)
+
+-- | Like 'capture', but with extra environment variables (merged into the
+-- inherited environment) and a stdin body. Secrets go in @extraEnv@, never
+-- argv, so the error message cannot leak them.
+captureWith :: [(String, String)] -> BL.ByteString -> String -> [String] -> IO BL.ByteString
+captureWith extraEnv body cmd args = do
+  env <- getEnvironment
+  (ec, out, err) <-
+    readProcess (setEnv (extraEnv ++ env) (setStdin (byteStringInput body) (proc cmd args)))
+  case ec of
+    ExitSuccess -> pure out
+    ExitFailure n ->
+      die (unwords (cmd : args) <> " failed (exit " <> show n <> "):\n" <> T.unpack (lbsText err))
 
 -- | Run with all streams inherited: git's own progress output is the progress story.
 inherit :: String -> [String] -> IO ()
@@ -244,6 +275,86 @@ glabPaged endpoint maxPages = go 1
                     then pure (items, False)
                     else (\(more, capped) -> (items ++ more, capped)) <$> go (n + 1)
             _ -> die ("glab api " <> endpoint <> ": expected a JSON array")
+
+--------------------------------------------------------------------------------
+-- Publishing snippets
+--------------------------------------------------------------------------------
+
+-- | URL-encoded project whose snippets host published reviews.
+publishProject :: String
+publishProject = "sjakobi%2FGlaHiCo"
+
+-- | Snippet creation needs a write-capable token (scope @api@); the
+-- glab-configured token is read-only by design. glab prefers GITLAB_TOKEN
+-- over its config, so only this step gains write access.
+publishToken :: FilePath -> IO String
+publishToken dataDir = do
+  let path = dataDir </> "gitlab-token"
+  exists <- doesFileExist path
+  unless exists $
+    die
+      ( path <> " not found.\n"
+          <> "Create a personal access token with scope `api` at\n"
+          <> "https://gitlab.haskell.org/-/user_settings/personal_access_tokens\n"
+          <> "and save it there (single line, chmod 600)."
+      )
+  T.unpack . T.strip <$> TIO.readFile path
+
+runPublish :: FilePath -> FilePath -> IO ()
+runPublish dataDir runDir = do
+  let reviewPath = runDir </> "review.md"
+      snippetPath = runDir </> "snippet.json"
+  haveReview <- doesFileExist reviewPath
+  unless haveReview $ die (reviewPath <> " not found")
+  published <- doesFileExist snippetPath
+  when published $ do
+    prev <- eitherDecode <$> BL.readFile snippetPath
+    let url = either (const "?") (fromMaybe "?" . vText "web_url") prev
+    die
+      ( snippetPath <> " already exists (published at " <> T.unpack url <> ").\n"
+          <> "Delete it to publish this run again."
+      )
+  review <- TIO.readFile reviewPath
+  let title = case T.lines review of
+        (l : _) | Just t <- T.stripPrefix "# " l -> t
+        _ -> "GlaHiCo review"
+      body =
+        A.encode $
+          object
+            [ "title" .= title
+            , "visibility" .= ("internal" :: Text)
+            , "files" .= [object ["file_path" .= ("review.md" :: Text), "content" .= review]]
+            ]
+  token <- publishToken dataDir
+  out <-
+    captureWith
+      [("GITLAB_TOKEN", token)]
+      body
+      "glab"
+      [ "api"
+      , "--hostname"
+      , "gitlab.haskell.org"
+      , "-X"
+      , "POST"
+      , "-H"
+      , "Content-Type: application/json"
+      , "--input"
+      , "-"
+      , "projects/" <> publishProject <> "/snippets"
+      ]
+  resp <- either (\e -> die ("snippet response: " <> e)) pure (eitherDecode out)
+  sid <- maybe (die "snippet response: missing field id") pure (vInt "id" resp)
+  url <- reqText "snippet response" "web_url" resp
+  now <- getCurrentTime
+  BL.writeFile snippetPath $
+    AP.encodePretty $
+      object
+        [ "id" .= sid
+        , "web_url" .= url
+        , "project" .= publishProject
+        , "published_at" .= formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now
+        ]
+  putStrLn (T.unpack url)
 
 --------------------------------------------------------------------------------
 -- Mirror & worktree
@@ -1140,16 +1251,22 @@ uncommittedPromptFiles =
 main :: IO ()
 main = do
   hSetBuffering stdout LineBuffering
-  opts <-
+  cmd <-
     execParser
       ( info
-          (optsP <**> helper)
+          (cmdP <**> helper)
           (fullDesc <> progDesc "LLM code review for GHC merge requests; writes review.md and prints its path.")
       )
-  adhocText <- traverse (\case AdhocText t -> pure t; AdhocFile p -> TIO.readFile p) opts.adhoc
-  tgt <- either die pure (parseTarget opts.target)
   home <- getHomeDirectory
   let dataDir = home </> "glahico"
+  case cmd of
+    PublishCmd runDir -> runPublish dataDir runDir
+    ReviewCmd opts -> runReview dataDir opts
+
+runReview :: FilePath -> Opts -> IO ()
+runReview dataDir opts = do
+  adhocText <- traverse (\case AdhocText t -> pure t; AdhocFile p -> TIO.readFile p) opts.adhoc
+  tgt <- either die pure (parseTarget opts.target)
   resolved <- case tgt of
     MrTarget project iid -> do
       putStrLn ("Target: !" <> show iid <> " in " <> T.unpack project)
