@@ -257,25 +257,6 @@ glabJson endpoint =
   tryGlabJson endpoint
     >>= either (\e -> die ("glab api " <> endpoint <> " failed:\n" <> T.unpack e)) pure
 
--- | Fetch up to @maxPages@ pages; the 'Bool' reports whether the page cap cut
--- the result short (a truncation the byte caps cannot see).
-glabPaged :: String -> Int -> IO ([Value], Bool)
-glabPaged endpoint maxPages = go 1
-  where
-    sep = if '?' `elem` endpoint then "&" else "?"
-    go :: Int -> IO ([Value], Bool)
-    go n
-      | n > maxPages = pure ([], True)
-      | otherwise = do
-          v <- glabJson (endpoint <> sep <> "per_page=100&page=" <> show n)
-          case v of
-            Array xs ->
-              let items = toList xs
-               in if length items < 100
-                    then pure (items, False)
-                    else (\(more, capped) -> (items ++ more, capped)) <$> go (n + 1)
-            _ -> die ("glab api " <> endpoint <> ": expected a JSON array")
-
 --------------------------------------------------------------------------------
 -- Publishing snippets
 --------------------------------------------------------------------------------
@@ -550,25 +531,10 @@ capBytes name cap content
       TE.decodeUtf8Lenient atNewline
         <> "\n[truncated: " <> name <> " exceeded " <> tshow cap <> " bytes]\n"
 
-issueRefs :: Text -> [Int]
-issueRefs = go . T.unpack
-  where
-    go [] = []
-    go ('#' : rest) =
-      let (ds, rest') = span isDigit rest
-          len = length ds
-       in if len >= 3 && len <= 6 then read ds : go rest' else go rest'
-    go (_ : rest) = go rest
-
 authorOf :: Value -> Text
 authorOf v = case vKey "author" v of
   Just a -> fromMaybe "?" (vText "name" a) <> maybe "" (\u -> " (@" <> u <> ")") (vText "username" a)
   Nothing -> "?"
-
-noteMarkdown :: Value -> Text
-noteMarkdown n =
-  "## " <> authorOf n <> " — " <> fromMaybe "" (vText "created_at" n)
-    <> "\n\n" <> fromMaybe "" (vText "body" n) <> "\n"
 
 mrMarkdown :: MrData -> Text
 mrMarkdown md =
@@ -590,31 +556,6 @@ mrMarkdown md =
     branch k = fromMaybe "?" (vText k m)
     labels = T.intercalate ", " [l | String l <- vArray "labels" m]
 
-discussionMarkdown :: [Value] -> Text
-discussionMarkdown discussions
-  | null notes = "# MR discussion\n\n(no non-system comments)\n"
-  | otherwise = "# MR discussion\n\n" <> T.intercalate "\n" (map noteMarkdown notes)
-  where
-    notes = [n | d <- discussions, n <- vArray "notes" d, not (vBoolIs "system" True n)]
-
-issueMarkdown :: Int -> Value -> [Value] -> Text
-issueMarkdown n issue notes0 =
-  T.unlines
-    [ "# Issue #" <> tshow n <> ": " <> fromMaybe "(no title)" (vText "title" issue)
-    , ""
-    , "- State: " <> fromMaybe "?" (vText "state" issue)
-    , "- Author: " <> authorOf issue
-    , "- URL: " <> fromMaybe "" (vText "web_url" issue)
-    , ""
-    , "## Description"
-    , ""
-    , fromMaybe "" (vText "description" issue)
-    , ""
-    ]
-    <> T.intercalate "\n" (map noteMarkdown notes)
-  where
-    notes = take 100 [x | x <- notes0, not (vBoolIs "system" True x)]
-
 buildContext :: Resolved -> FilePath -> IO (FilePath, [Text])
 buildContext res runDir = do
   let ctx = runDir </> "context"
@@ -632,40 +573,8 @@ buildContext res runDir = do
   putCapped (ctx </> "diffstat.txt") "diffstat.txt" (32 * 1024) stat
   commits <- gitOut res.worktree ["log", "--reverse", range]
   putCapped (ctx </> "commits.txt") "commits.txt" (100 * 1024) commits
-  forM_ res.mr $ \md -> do
-    let enc = urlEncodeProject md.project
+  forM_ res.mr $ \md ->
     putCapped (ctx </> "mr.md") "mr.md" (50 * 1024) (mrMarkdown md)
-    putStrLn "Fetching MR discussion ..."
-    (discussions, discCapped) <-
-      glabPaged ("projects/" <> enc <> "/merge_requests/" <> show md.iid <> "/discussions") 5
-    when discCapped $
-      modifyIORef' truncsRef (++ ["discussion.md: more than 5 pages of discussions, remainder omitted"])
-    putCapped (ctx </> "discussion.md") "discussion.md" (200 * 1024) (discussionMarkdown discussions)
-    let refs = nub (issueRefs commits ++ issueRefs (fromMaybe "" (vText "description" md.meta)))
-    when (length refs > 5) $
-      modifyIORef'
-        truncsRef
-        (++ ["linked issues: " <> tshow (length refs) <> " referenced, only the first 5 included"])
-    let picked = take 5 refs
-    unless (null picked) (createDirectoryIfMissing True (ctx </> "issues"))
-    forM_ picked $ \n -> do
-      putStrLn ("Fetching issue #" <> show n <> " ...")
-      tryGlabJson ("projects/ghc%2Fghc/issues/" <> show n) >>= \case
-        Left err -> warn ("could not fetch issue #" <> show n <> ": " <> T.unpack err)
-        Right issue -> do
-          eNotes <- tryGlabJson ("projects/ghc%2Fghc/issues/" <> show n <> "/notes?per_page=100")
-          let notes = case eNotes of
-                Right (Array xs) -> toList xs
-                _ -> []
-          when (length notes == 100) $
-            modifyIORef'
-              truncsRef
-              (++ [T.pack ("issues/" <> show n <> ".md") <> ": only the first page (100) of comments fetched"])
-          putCapped
-            (ctx </> "issues" </> show n <> ".md")
-            (T.pack ("issues/" <> show n <> ".md"))
-            (50 * 1024)
-            (issueMarkdown n issue notes)
   truncs <- readIORef truncsRef
   pure (ctx, truncs)
 

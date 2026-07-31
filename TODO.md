@@ -10,11 +10,11 @@ Observations from the 2026-07-29 implementation session (branch `glahico-script`
 
 - Consider (network) access via glab so the agents can lookup relevant issues.
 
-- **Finder prompt references `discussion.md` on local runs.** The sentence
-  "Check {ctx}/discussion.md before reporting …" in `prompts/finder.md` is not
-  tagged `[MR targets only]`, so local-range runs still point the finder at a
-  file that doesn't exist. Harmless but sloppy; making it conditional needs
-  either tags on both prose lines or tag-stripping for MR runs.
+- Consider re-adding MR discussion and linked issues to the context pack
+  (fetching removed 2026-07-31 because the prompts no longer referenced
+  `discussion.md`/`issues/`). If re-added, the prompts need matching
+  `[MR targets only]` pointers so local-range runs aren't sent to files
+  that don't exist.
 
 - **`-dirty` fires on untracked files.** The disclosure's glahico-commit
   suffix comes from `git status --porcelain`, so an untracked file like this

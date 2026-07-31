@@ -81,11 +81,7 @@ directory. Everything in it is public.
 
 - **Diff** (`base..head`, with `--stat`) and **commit messages** (full).
 - **Worktree** with the head checked out, for read-only exploration.
-- For MR targets: **MR metadata** (title, description, labels, branches),
-  **MR discussion** (non-system notes — so the review can avoid restating what
-  humans already said), and **linked issues** (`#NNNNN` references from commit
-  messages and the MR description; title, description, comments; depth 1,
-  capped).
+- For MR targets: **MR metadata** (title, description, labels, branches).
 
 Truncation, when caps bite, is explicit (`[truncated]`) and noted in the
 disclosure header.
