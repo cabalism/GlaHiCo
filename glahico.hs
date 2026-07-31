@@ -122,13 +122,15 @@ data Target = MrTarget Text Int | LocalRange Text
 
 parseTarget :: String -> Either String Target
 parseTarget s
-  | not (null s), all isDigit s = Right (MrTarget "ghc/ghc" (read s))
+  | null s = Left "empty target"
+  | all isDigit s = Right (MrTarget "ghc/ghc" (read s))
   | '!' : ds <- s, not (null ds), all isDigit ds = Right (MrTarget "ghc/ghc" (read ds))
   | Just rest <- stripPrefix "https://gitlab.haskell.org/" s = parseMrUrl rest
   | "http://" `isPrefixOf` s || "https://" `isPrefixOf` s =
       Left "only gitlab.haskell.org merge-request URLs are supported"
   | ".." `T.isInfixOf` T.pack s = Right (LocalRange (T.pack s))
-  | otherwise = Left ("cannot parse target: " <> s)
+  -- Anything else is taken as a single commit; git validates the rev.
+  | otherwise = Right (LocalRange (T.pack s <> "^.." <> T.pack s))
 
 parseMrUrl :: String -> Either String Target
 parseMrUrl rest

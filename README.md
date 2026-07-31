@@ -28,6 +28,7 @@ See `DESIGN.md` for the rationale.
 - a gitlab.haskell.org MR URL
 - a local commit range in the current repository: `BASE..HEAD`
   (either side may be omitted and defaults to `HEAD`)
+- a single local commit: any other rev, reviewed as `REV^..REV`
 
 Examples:
 
