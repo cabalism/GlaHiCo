@@ -34,7 +34,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
-import Data.Char (isAlphaNum, isDigit, toLower)
+import Data.Char (isAlphaNum, isDigit, isHexDigit, toLower)
 import Data.Foldable (toList)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (intercalate, isInfixOf, isPrefixOf, nub, stripPrefix)
@@ -90,7 +90,7 @@ optsP :: Parser Opts
 optsP =
   Opts
     <$> strArgument
-      (metavar "TARGET" <> help "MR number (14892 or !14892), gitlab.haskell.org MR URL, or local commit range (BASE..HEAD)")
+      (metavar "TARGET" <> help "MR number (14892 or !14892), gitlab.haskell.org MR URL, local commit range (BASE..HEAD), or single commit")
     <*> strOption
       (long "finder-model" <> metavar "ALIAS" <> value "opus" <> showDefault <> help "Model for the finder stage")
     <*> strOption
@@ -118,7 +118,8 @@ effortOption name h =
 -- Target parsing
 --------------------------------------------------------------------------------
 
-data Target = MrTarget Text Int | LocalRange Text
+-- | RangeTarget carries the base and head specs; empty sides default to HEAD.
+data Target = MrTarget Text Int | RangeTarget Text Text | CommitTarget Text
 
 parseTarget :: String -> Either String Target
 parseTarget s
@@ -128,9 +129,13 @@ parseTarget s
   | Just rest <- stripPrefix "https://gitlab.haskell.org/" s = parseMrUrl rest
   | "http://" `isPrefixOf` s || "https://" `isPrefixOf` s =
       Left "only gitlab.haskell.org merge-request URLs are supported"
-  | ".." `T.isInfixOf` T.pack s = Right (LocalRange (T.pack s))
+  | (a, rest) <- T.breakOn ".." (T.pack s)
+  , Just b <- T.stripPrefix ".." rest =
+      Right (RangeTarget (orHead a) (orHead (T.dropWhile (== '.') b)))
   -- Anything else is taken as a single commit; git validates the rev.
-  | otherwise = Right (LocalRange (T.pack s <> "^.." <> T.pack s))
+  | otherwise = Right (CommitTarget (T.pack s))
+  where
+    orHead t = if T.null t then "HEAD" else t
 
 parseMrUrl :: String -> Either String Target
 parseMrUrl rest
@@ -499,18 +504,40 @@ resolveMr dataDir project iid = do
   prepareWorktree (dataDir </> "submodules") mirror wt headSha
   pure Resolved {slug, worktree = wt, baseSha, headSha, mr = Just (MrData project iid meta)}
 
-resolveLocal :: FilePath -> Text -> IO Resolved
-resolveLocal dataDir spec = do
-  (a0, b0) <- case T.breakOn ".." spec of
-    (a, rest)
-      | Just b <- T.stripPrefix ".." rest -> pure (a, T.dropWhile (== '.') b)
-    _ -> die ("cannot parse commit range: " <> T.unpack spec)
-  let aSpec = if T.null a0 then "HEAD" else a0
-      bSpec = if T.null b0 then "HEAD" else b0
+-- | rev-parse a spec; if unknown locally, try fetching it from the repo's
+-- remotes (direct-SHA fetch for full hashes, plain fetch otherwise) and retry.
+resolveRev :: FilePath -> Text -> IO Text
+resolveRev repo spec = do
+  let revParse = tryCapture "git" ["-C", repo, "rev-parse", "--verify", T.unpack spec <> "^{commit}"]
+  revParse >>= \case
+    Right sha -> pure (T.strip (lbsText sha))
+    Left e -> do
+      remotes <- T.words <$> gitIn repo ["remote"]
+      when (null remotes) $
+        die ("git rev-parse " <> T.unpack spec <> " failed:\n" <> T.unpack e)
+      putStrLn ("Rev " <> T.unpack spec <> " not found locally; fetching from remotes ...")
+      -- Servers only accept direct fetches of full SHAs, so strip any
+      -- ^/~ suffix (the base spec of a single-commit target is <sha>^).
+      let bare = T.takeWhile (\c -> c /= '^' && c /= '~') spec
+          isSha = T.length bare == 40 && T.all isHexDigit bare
+          fetch args = either (const False) (const True) <$> tryCapture "git" (["-C", repo, "fetch"] <> args)
+      gotSha <-
+        if isSha
+          then anyM (\r -> fetch [T.unpack r, T.unpack bare]) remotes
+          else pure False
+      unless gotSha $
+        mapM_ (\r -> fetch [T.unpack r]) remotes
+      gitIn repo ["rev-parse", "--verify", T.unpack spec <> "^{commit}"]
+  where
+    anyM f = foldr (\x rest -> f x >>= \ok -> if ok then pure True else rest) (pure False)
+
+resolveLocal :: FilePath -> Text -> Text -> IO Resolved
+resolveLocal dataDir baseSpec headSpec = do
   repoTop <- T.strip . lbsText <$> capture "git" ["rev-parse", "--show-toplevel"]
   let repo = T.unpack repoTop
-  headSha <- gitIn repo ["rev-parse", "--verify", T.unpack bSpec <> "^{commit}"]
-  baseSha <- gitIn repo ["merge-base", T.unpack aSpec, T.unpack bSpec]
+  headSha <- resolveRev repo headSpec
+  baseTip <- resolveRev repo baseSpec -- head first: one fetch covers <sha>^ too
+  baseSha <- gitIn repo ["merge-base", T.unpack baseTip, T.unpack headSha]
   let slug =
         "local-" <> takeFileName repo <> "-"
           <> T.unpack (T.take 7 baseSha) <> ".." <> T.unpack (T.take 7 headSha)
@@ -1191,9 +1218,12 @@ runReview dataDir opts = do
     MrTarget project iid -> do
       putStrLn ("Target: !" <> show iid <> " in " <> T.unpack project)
       resolveMr dataDir project iid
-    LocalRange spec -> do
-      putStrLn ("Target: local range " <> T.unpack spec)
-      resolveLocal dataDir spec
+    RangeTarget a b -> do
+      putStrLn ("Target: local range " <> T.unpack a <> ".." <> T.unpack b)
+      resolveLocal dataDir a b
+    CommitTarget c -> do
+      putStrLn ("Target: local commit " <> T.unpack c)
+      resolveLocal dataDir (c <> "^") c
   now <- getCurrentTime
   let ts = formatTime defaultTimeLocale "%Y%m%dT%H%M%S" now
       runDir = dataDir </> "runs" </> resolved.slug </> ts
@@ -1255,8 +1285,8 @@ runReview dataDir opts = do
         , fromMaybe "(no title)" (vText "title" md.meta) <> " (!" <> tshow md.iid <> ")"
         )
     Nothing
-      | ".." `T.isInfixOf` T.pack opts.target ->
-          pure (dup ("local range " <> T.pack opts.target))
+      | RangeTarget a b <- tgt ->
+          pure (dup ("local range " <> a <> ".." <> b))
       | otherwise -> do
           subject <- gitIn resolved.worktree ["log", "-1", "--format=%s", T.unpack resolved.headSha]
           pure (dup (subject <> " (" <> T.take 7 resolved.headSha <> ")"))
