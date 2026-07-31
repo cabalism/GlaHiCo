@@ -37,9 +37,11 @@ no module tree — structure gets added when it hurts, not before. It:
 3. runs the finder, then one verifier per finding,
 4. writes `review.md` under a per-run directory and prints its path.
 
-Publication is manual: Simon reads nothing into the MR that the tool didn't
-write, but he pastes it (or a snippet link) himself. No snippet automation, no
-bundle repo, no feedback machinery in v1.
+Publication is explicit: `glahico publish RUN_DIR` posts `review.md` as an
+internal-visibility snippet on sjakobi/GlaHiCo (see README), but linking it
+from the MR stays manual — Simon posts nothing into the MR that he didn't
+decide to. Feedback arrives as snippet comments; no bundle repo, no feedback
+machinery in v1.
 
 ### Models
 
@@ -166,8 +168,10 @@ runs/<slug>/<timestamp>/
   review.md        the deliverable
 ```
 
-Local only for now. Publishing bundles publicly (everything in them is public
-by construction) is a later decision, not a v1 feature.
+Run directories stay local; `publish` uploads only `review.md` and writes
+`snippet.json` (snippet id and URL) back into the run directory. Publishing
+whole bundles publicly (everything in them is public by construction) is a
+later decision, not a v1 feature.
 
 ## Budget
 
@@ -182,7 +186,7 @@ Anything batch-shaped (regression corpora, replay sweeps) stays out of scope.
 All of DESIGN_OLD's remaining structure waits for evidence that it's needed:
 
 - YAML pipeline definitions, multiple tasks, docs/perf pipelines.
-- Snippet automation, public bundle repo, feedback YAML and stats.
+- Public bundle repo, feedback YAML and stats.
 - The false-positive guide (until data exists).
 - A second harness (codex) and cross-model agreement.
 - Severity/confidence fields in the finding schema.

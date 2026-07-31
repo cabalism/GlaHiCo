@@ -44,8 +44,8 @@ Examples:
 ./glahico.hs 16419 --prompt 'Pay extra attention to the changed FFI code.'
 ```
 
-The finder runs on model `fable` and the verifier on `opus` by default, both
-at `medium` effort (`low|medium|high|xhigh|max`).
+Finder and verifier both run on model `opus` by default, at `medium` effort
+(`low|medium|high|xhigh|max`).
 
 ## Output
 
@@ -58,3 +58,42 @@ worktrees, runs).
 The review is meant to be posted verbatim: the disclosure header records the
 GlaHiCo commit, target SHAs, models and effort levels used, and any
 truncations, so readers can judge the output's provenance.
+
+## Publishing
+
+```sh
+./glahico.hs publish RUN_DIR
+```
+
+posts `RUN_DIR/review.md` as a snippet on
+[sjakobi/GlaHiCo](https://gitlab.haskell.org/sjakobi/GlaHiCo/-/snippets),
+titled with the review's H1, and prints the snippet URL. Visibility is
+`internal` (any logged-in gitlab.haskell.org user can view and comment; the
+project's own visibility caps what snippets can have). Snippet comments are
+the feedback channel: `RUN_DIR/snippet.json` records the snippet id so later
+tooling can poll them with the read-only glab token. While that file exists,
+publishing the same run again is refused.
+
+Linking the snippet from the MR remains a manual step. Snippets are authored
+by the token's bot user, not your account.
+
+### One-time token setup
+
+The glab-configured token is deliberately read-only (`read_api`); snippet
+creation needs the `api` scope, GitLab's only write-capable API scope. To
+confine it, use a *project access token* on sjakobi/GlaHiCo (Settings →
+Access tokens; role Developer, scope `api`): it authenticates as a bot
+member of that one project and can't touch anything else.
+
+Save the token where processes running as your user — coding agents
+included — cannot read it:
+
+```sh
+echo glpat-... > ~/glahico/gitlab-token
+sudo chown root:root ~/glahico/gitlab-token
+sudo chmod 600 ~/glahico/gitlab-token
+```
+
+`publish` reads the file via `sudo cat`, prompting for your password in the
+terminal. Agent-spawned processes have no terminal, so for them sudo fails
+immediately instead of exposing the token.
