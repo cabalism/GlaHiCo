@@ -1244,15 +1244,18 @@ runReview dataDir opts = do
     pure (f, verdict, snips, run)
   commit <- glahicoCommit
   dirtyPrompts <- uncommittedPromptFiles
-  let targetDesc = case resolved.mr of
+  let localDesc
+        | ".." `T.isInfixOf` T.pack opts.target = "local range " <> T.pack opts.target
+        | otherwise = "local commit " <> T.pack opts.target
+      targetDesc = case resolved.mr of
         Just md ->
           "[" <> md.project <> "!" <> tshow md.iid
             <> "](https://gitlab.haskell.org/" <> md.project <> "/-/merge_requests/" <> tshow md.iid <> ")"
-        Nothing -> "local range " <> T.pack opts.target
+        Nothing -> localDesc
       titleSuffix = case resolved.mr of
         Just md ->
           fromMaybe "(no title)" (vText "title" md.meta) <> " (!" <> tshow md.iid <> ")"
-        Nothing -> "local range " <> T.pack opts.target
+        Nothing -> localDesc
       report =
         Report
           { targetDesc
