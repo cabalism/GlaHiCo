@@ -2,6 +2,12 @@
 
 Observations from the 2026-07-29 implementation session (branch `glahico-script`):
 
+- A tool that runs glahico on (selected) merged MRs
+
+- A command to generate a reproducer for a given finding
+
+- A command that drafts a ticket from a finding and a reproducer
+
 - Near the title, mention HEAD commit and when the review was generated
 
 - Simon needs to test prompt additions!
