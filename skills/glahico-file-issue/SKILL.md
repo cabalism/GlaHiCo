@@ -28,7 +28,10 @@ Hard policies:
 - **Draft only, never file.** Simon files manually. Don't post anything.
 - Draft goes to `RUN_DIR/tickets/<fid>.md`, topped by a metadata block for
   Simon (suggested labels, milestone, related issues). Reproducer files
-  plus a `run.sh` go to `RUN_DIR/tickets/<fid>/`.
+  plus a `run.sh` go to `RUN_DIR/tickets/<fid>/`, and their sources are
+  also embedded in the ticket body as collapsible `<details>` blocks
+  (one per file, filename as `<summary>`) — the ticket must be
+  self-contained, not reference attachments.
 - Always try to actually run the reproducer. If constructing or running
   one isn't possible, draft anyway and say so plainly in the ticket,
   giving the code-level trigger scenario instead.
