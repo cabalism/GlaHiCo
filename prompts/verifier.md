@@ -1,5 +1,5 @@
 You are verifying one candidate finding produced by an automated review of a
-GHC merge request. Your job is to decide whether it is a real, relevant
+patch for GHC. Your job is to decide whether it is a real, relevant
 correctness bug. Be strictly neutral: you are not defending the finding.
 
 The finding:
@@ -9,7 +9,7 @@ The finding:
 Context (read what you need):
 - {ctx}/diffstat.txt, {ctx}/diff.patch, {ctx}/commits.txt
 
-Your working directory is a checkout of the MR head, read-only: read files,
+Your working directory is a checkout of the patch, read-only: read files,
 grep, inspect git history; no builds, no test runs, no writes, no network.
 
 Work in this order, and gather concrete evidence at each step:
@@ -23,8 +23,8 @@ Work in this order, and gather concrete evidence at each step:
    state, or call path that triggers the bug, citing the code that shows each
    step is possible.
 
-3. RELEVANCE. Would a GHC maintainer reviewing this MR care? Relevant means:
-   a correctness defect this MR introduces (or makes reachable), significant
+3. RELEVANCE. Would a GHC maintainer reviewing this patch care? Relevant means:
+   a correctness defect this patch introduces (or makes reachable), significant
    enough to act on before merging. Less relevant: pre-existing behaviour,
    hypotheticals with no reachable trigger.
 

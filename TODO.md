@@ -12,6 +12,10 @@ Observations from the 2026-07-29 implementation session (branch `glahico-script`
 
 - Simon needs to test prompt additions!
 
+- Consider having the finder report test-coverage issues too. Currently
+  `prompts/finder.md` lists missing tests as out of scope; lift that once the
+  core review flow is solid.
+
 - Add a command that reruns the report generation on existing review artifacts
 
 - Consider (network) access via glab so the agents can lookup relevant issues.
