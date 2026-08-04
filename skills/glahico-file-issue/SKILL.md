@@ -24,8 +24,8 @@ Hard policies:
 - Always try to actually run the reproducer. If constructing or running
   one isn't possible, draft anyway and say so plainly in the ticket,
   giving the code-level trigger scenario instead.
-- The ticket notes GlaHiCo provenance: found by an automated Claude-based
-  review of the commits (link them), analysis human-checked.
+- The ticket notes GlaHiCo provenance: found by an LLM-generated
+  review of the commits (link them), reviewed by a human before filing.
 
 Environment facts:
 
