@@ -406,6 +406,25 @@ prepareWorktree subStores srcRepo wt headSha = do
       gitLoud srcRepo ["worktree", "add", "--detach", wt, T.unpack headSha]
   initSubmodules subStores wt
 
+-- | Remove a worktree after a successful run (~350M each with GHC
+-- submodules; recreating one is seconds thanks to the submodule stores).
+-- A dirty worktree is kept: agents are not expected to write to it, so
+-- unexpected state is preserved for inspection, as in 'prepareWorktree'.
+removeWorktree :: FilePath -> IO ()
+removeWorktree wt = do
+  dirty <- gitIn wt ["status", "--porcelain"]
+  if not (T.null dirty)
+    then warn ("worktree " <> wt <> " is dirty; not removing it.")
+    else do
+      commonDir <- gitIn wt ["rev-parse", "--git-common-dir"]
+      -- --force: git refuses to remove worktrees containing submodules
+      -- without it. Also cleans <commonDir>/worktrees/<name>/ (where the
+      -- submodule gitdirs live), which a bare rm -rf would leak.
+      r <- tryCapture "git" ["--git-dir=" <> T.unpack commonDir, "worktree", "remove", "--force", wt]
+      case r of
+        Right _ -> putStrLn ("Removed worktree " <> wt)
+        Left e -> warn ("failed to remove worktree " <> wt <> ":\n" <> T.unpack e)
+
 submoduleNames :: FilePath -> IO [String]
 submoduleNames wt = do
   out <- gitOut wt ["config", "-f", ".gitmodules", "--get-regexp", "\\.path$"]
@@ -1319,3 +1338,5 @@ runReview dataDir opts = do
       reviewPath = runDir </> "review.md"
   TIO.writeFile reviewPath (renderReview report)
   putStrLn reviewPath
+  -- Only on success: an exception earlier keeps the worktree for debugging.
+  removeWorktree resolved.worktree
