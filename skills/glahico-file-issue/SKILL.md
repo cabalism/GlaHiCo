@@ -15,6 +15,14 @@ tracked; if it's worth filing, build and run a reproducer and write a
 concise, high-quality draft ticket. If it isn't worth filing (already
 fixed, duplicate, not a real bug), report why instead of drafting.
 
+Pre-checks (per finding, before any other work):
+
+- The review must be published: `RUN_DIR/snippet.json` exists (written by
+  `glahico publish`). If it doesn't, stop and ask Simon to publish first.
+- No draft exists yet: if `RUN_DIR/tickets/<fid>.md` is already there,
+  stop and point to it — it may have been hand-edited or already filed;
+  never overwrite it.
+
 Hard policies:
 
 - **Draft only, never file.** Simon files manually. Don't post anything.
@@ -25,7 +33,8 @@ Hard policies:
   one isn't possible, draft anyway and say so plainly in the ticket,
   giving the code-level trigger scenario instead.
 - The ticket notes GlaHiCo provenance: found by an LLM-generated
-  review of the commits (link them), reviewed by a human before filing.
+  review of the commits (link them, and the published review via
+  `snippet.json`'s `web_url`), reviewed by a human before filing.
 
 Environment facts:
 
