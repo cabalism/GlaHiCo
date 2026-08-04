@@ -79,7 +79,7 @@ cmdP =
     ( command
         "publish"
         ( info
-            (PublishCmd <$> strArgument (metavar "RUN_DIR" <> help "Run directory containing review.md"))
+            (PublishCmd <$> strArgument (metavar "RUN_DIR|REVIEW_MD" <> help "Run directory containing review.md, or the review.md file itself"))
             (progDesc "Publish a run's review.md as a GitLab snippet")
         )
         <> metavar "publish"
@@ -297,9 +297,12 @@ publishToken dataDir = do
   putStrLn "Reading token (sudo will prompt for your password) ..."
   T.unpack . T.strip . lbsText <$> capture "sudo" ["cat", path]
 
+-- | The argument may be the run directory or the review.md file itself.
 runPublish :: FilePath -> FilePath -> IO ()
-runPublish dataDir runDir = do
-  let reviewPath = runDir </> "review.md"
+runPublish dataDir arg = do
+  argIsFile <- doesFileExist arg
+  let runDir = if argIsFile then takeDirectory arg else arg
+      reviewPath = if argIsFile then arg else runDir </> "review.md"
       snippetPath = runDir </> "snippet.json"
   haveReview <- doesFileExist reviewPath
   unless haveReview $ die (reviewPath <> " not found")
