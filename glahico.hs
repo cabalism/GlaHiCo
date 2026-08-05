@@ -1028,12 +1028,13 @@ headingAnchor =
 renderReview :: Report -> Text
 renderReview r =
   T.unlines
-    ( headerLines ++ feedbackLines ++ findingsSection ++ lowSection ++ adhocSection
+    ( headerLines ++ feedbackLines ++ findingsSection ++ lowSection ++ lowRelSection ++ adhocSection
         ++ dirtySection ++ disclosureSection ++ disclaimerLines
     )
   where
     confirmedRel = [fv | fv@(_, v, _) <- r.verified, v.verdict == "confirmed", v.relevant]
     uncertainRel = [fv | fv@(_, v, _) <- r.verified, v.verdict == "uncertain", v.relevant]
+    lowRel = [fv | fv@(_, v, _) <- r.verified, not v.relevant, v.verdict /= "refuted"]
     backticked t = "`" <> t <> "`"
     stageLine name (st :: Stage) =
       "- " <> name <> ": requested " <> backticked (T.pack st.alias)
@@ -1060,8 +1061,11 @@ renderReview r =
         ++ [ tshow (length uncertainRel) <> " uncertain but judged relevant (included as low-confidence)"
            | not (null uncertainRel)
            ]
+        ++ [ tshow (length lowRel) <> " judged low-relevance (included)"
+           | not (null lowRel)
+           ]
         ++ [ tshow (length droppedFvs) <> " dropped ("
-               <> T.intercalate ", " [f.id <> ": " <> dropReason v | (f, v) <- droppedFvs]
+               <> T.intercalate ", " [f.id <> ": refuted" | (f, _) <- droppedFvs]
                <> ")"
            | not (null droppedFvs)
            ]
@@ -1069,15 +1073,8 @@ renderReview r =
       [ tshow r.unverified <> " not verified (preserved in findings.json in the run directory)"
       | r.unverified > 0
       ]
-    droppedFvs =
-      [ (f, v)
-      | (f, v, _) <- r.verified
-      , not (v.relevant && (v.verdict == "confirmed" || v.verdict == "uncertain"))
-      ]
-    dropReason (v :: Verdict)
-      | v.verdict == "refuted" = "refuted"
-      | otherwise = v.verdict <> " and judged not relevant"
-    block (f, v, snips) =
+    droppedFvs = [(f, v) | (f, v, _) <- r.verified, v.verdict == "refuted"]
+    block extraLines (f, v, snips) =
       [ "### " <> f.id <> ": " <> f.title
       , ""
       ]
@@ -1085,6 +1082,7 @@ renderReview r =
         ++ [ v.writeup
            , ""
            ]
+        ++ extraLines v
     -- Four-backtick fences, like the ad-hoc appendix, so embedded ``` can't
     -- break out. The location goes inside the fence as a comment when we know
     -- the language's comment syntax; a label line above is the fallback.
@@ -1102,7 +1100,7 @@ renderReview r =
       , ""
       ]
     summaryLines
-      | null confirmedRel && null uncertainRel =
+      | null confirmedRel && null uncertainRel && null lowRel =
           [ if r.totalFindings == 0
               then "_The finder reported no findings._"
               else "_No findings survived verification._"
@@ -1111,6 +1109,7 @@ renderReview r =
       | otherwise =
           linkGroup "High-confidence findings:" confirmedRel
             ++ linkGroup "Low-confidence findings:" uncertainRel
+            ++ linkGroup "Low-relevance findings:" lowRel
     linkGroup label fvs
       | null fvs = []
       | otherwise =
@@ -1123,7 +1122,8 @@ renderReview r =
             ++ [""]
     findingsSection
       | null confirmedRel = []
-      | otherwise = "## High-confidence findings" : "" : concatMap block confirmedRel
+      | otherwise =
+          "## High-confidence findings" : "" : concatMap (block (const [])) confirmedRel
     disclosureSection =
       [ "## Disclosure"
       , ""
@@ -1146,7 +1146,22 @@ renderReview r =
           , "because it judged them relevant."
           , ""
           ]
-            ++ concatMap block uncertainRel
+            ++ concatMap (block (const [])) uncertainRel
+    lowRelSection
+      | null lowRel = []
+      | otherwise =
+          [ "## Low-relevance findings"
+          , ""
+          , "The verifier judged these findings valid or plausible, but of low"
+          , "relevance for this change."
+          , ""
+          ]
+            ++ concatMap (block rationaleLines) lowRel
+    rationaleLines (v :: Verdict) =
+      [ "_Verdict: " <> v.verdict <> "; judged low relevance: "
+          <> T.stripEnd v.relevance_rationale <> "_"
+      , ""
+      ]
     adhocSection = case r.adhocPrompt of
       Nothing -> []
       Just t ->
