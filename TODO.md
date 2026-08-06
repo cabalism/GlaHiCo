@@ -33,6 +33,14 @@ Observations from the 2026-07-29 implementation session (branch `glahico-script`
   (`git status --porcelain --untracked-files=no`) — or keep as the
   conservative/honest choice.
 
+- **Retry `publish` on Anubis challenge.** gitlab.haskell.org intermittently
+  serves an Anubis anti-bot HTML page ("Making sure you're not a bot!") on
+  API requests, so the snippet POST can fail with a JSON parse error on
+  `<!doctype html>`. Detect a non-JSON response and retry a few times with a
+  short backoff (token is read once up front, so no repeated sudo prompts).
+  Safe to retry the POST: Anubis blocks before GitLab sees the request, so
+  the HTML page means the snippet was not created. (Observed 2026-08-06.)
+
 - **Odd phrasing at zero findings.** The disclosure line "Findings: 0
   reported by the finder, all verified" reads strangely when there was
   nothing to verify; ditto "Verifier: … ran no calls".
