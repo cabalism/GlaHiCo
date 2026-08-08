@@ -32,6 +32,10 @@ Hard policies:
   also embedded in the ticket body as collapsible `<details>` blocks
   (one per file, filename as `<summary>`) — the ticket must be
   self-contained, not reference attachments.
+- Title: short and readable — aim for ≤ 90 characters.
+  Name the symptom or the buggy component, not the full diagnosis;
+  details (function names, flags, exact conditions) belong in the body.
+  Readability wins over completeness.
 - Always try to actually run the reproducer. If constructing or running
   one isn't possible, draft anyway and say so plainly in the ticket,
   giving the code-level trigger scenario instead.
