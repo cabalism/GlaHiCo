@@ -39,9 +39,32 @@ Hard policies:
 - Always try to actually run the reproducer. If constructing or running
   one isn't possible, draft anyway and say so plainly in the ticket,
   giving the code-level trigger scenario instead.
-- The ticket notes GlaHiCo provenance: found by an LLM-generated
-  review of the commits (link them, and the published review via
-  `snippet.json`'s `web_url`), reviewed by a human before filing.
+- LLM provenance is stated in two places, and the level-of-human-review
+  claim lives ONLY in the banner:
+  - Banner, in italics, directly after the title (before the first
+    section), verbatim:
+
+    ```
+    *This ticket reports a possible bug found by an LLM-based code
+    review (details under "Provenance" below). I, @sjakobi, have
+    checked it for plausibility, but not verified it in depth.*
+    ```
+
+  - `## Provenance` as the last section, facts only — pipeline,
+    reviewed commits, published review, LLM-written draft:
+
+    ```
+    Found by [GlaHiCo](https://gitlab.haskell.org/sjakobi/GlaHiCo), an
+    LLM-based code-review pipeline, while reviewing <what>. The
+    published review of <branch-sha> (master: <master-sha>) is at
+    <snippet.json web_url> (finding <fid>).
+    The draft of this ticket was also written by an LLM agent.
+    ```
+
+    If the reproducer was actually run and the failure confirmed,
+    append: "The reproducer above was built and run, and the failure
+    confirmed, before filing." Otherwise omit — never claim more
+    scrutiny than happened.
 
 Environment facts:
 
