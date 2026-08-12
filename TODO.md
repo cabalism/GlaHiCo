@@ -41,6 +41,10 @@ Observations from the 2026-07-29 implementation session (branch `glahico-script`
   Safe to retry the POST: Anubis blocks before GitLab sees the request, so
   the HTML page means the snippet was not created. (Observed 2026-08-06.)
 
+- **Make reproducers more prominent in GlaHiCo-derived tickets** (e.g. those
+  created by glahico-file-issue). See
+  https://gitlab.haskell.org/ghc/ghc/-/work_items/27658#note_691258.
+
 - **Odd phrasing at zero findings.** The disclosure line "Findings: 0
   reported by the finder, all verified" reads strangely when there was
   nothing to verify; ditto "Verifier: … ran no calls".
