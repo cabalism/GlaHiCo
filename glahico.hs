@@ -1025,6 +1025,12 @@ headingAnchor =
     . T.filter (\c -> isAlphaNum c || c `elem` (" -_" :: String))
     . T.map toLower
 
+-- Long enough that no backtick run in the body can close the fence early.
+fenceFor :: Text -> Text
+fenceFor body = T.replicate (max 4 (longest + 1)) "`"
+  where
+    longest = maximum (0 : [T.length g | g <- T.group body, T.head g == '`'])
+
 renderReview :: Report -> Text
 renderReview r =
   T.unlines
@@ -1083,15 +1089,17 @@ renderReview r =
            , ""
            ]
         ++ extraLines v
-    -- Four-backtick fences, like the ad-hoc appendix, so embedded ``` can't
-    -- break out. The location goes inside the fence as a comment when we know
-    -- the language's comment syntax; a label line above is the fallback.
+    -- Fences are sized via fenceFor so the body can't break out. The location
+    -- goes inside the fence as a comment when we know the language's comment
+    -- syntax; a label line above is the fallback.
     snippetLines (s :: RenderedSnippet) = case s.body of
       Nothing -> [backticked s.label, "", "_snippet unavailable_", ""]
       Just b ->
-        case s.commentedLabel of
-          Just c -> ["````" <> s.lang, c, T.stripEnd b, "````", ""]
-          Nothing -> [backticked s.label, "", "````" <> s.lang, T.stripEnd b, "````", ""]
+        let body = T.stripEnd b
+            fence = fenceFor body
+         in case s.commentedLabel of
+              Just c -> [fence <> s.lang, c, body, fence, ""]
+              Nothing -> [backticked s.label, "", fence <> s.lang, body, fence, ""]
     headerLines = ["# GlaHiCo review: " <> r.titleSuffix, ""] ++ summaryLines
     feedbackLines =
       [ "_Your feedback can help to make this service better! A quick reply"
@@ -1165,15 +1173,17 @@ renderReview r =
     adhocSection = case r.adhocPrompt of
       Nothing -> []
       Just t ->
-        [ "## Appendix: ad-hoc prompt additions"
-        , ""
-        , "The following instructions were appended to the finder prompt for this run:"
-        , ""
-        , "````"
-        , T.stripEnd t
-        , "````"
-        , ""
-        ]
+        let body = T.stripEnd t
+            fence = fenceFor body
+         in [ "## Appendix: ad-hoc prompt additions"
+            , ""
+            , "The following instructions were appended to the finder prompt for this run:"
+            , ""
+            , fence
+            , body
+            , fence
+            , ""
+            ]
     disclaimerLines =
       [ "> **This is tool output**, produced by GlaHiCo, an LLM review pipeline, and"
       , "> posted verbatim. Findings were filtered mechanically by the pipeline's"
@@ -1192,7 +1202,11 @@ renderReview r =
         , ""
         ]
           ++ concatMap
-            (\(name, content) -> ["### " <> T.pack name, "", "````", T.stripEnd content, "````", ""])
+            ( \(name, content) ->
+                let body = T.stripEnd content
+                    fence = fenceFor body
+                 in ["### " <> T.pack name, "", fence, body, fence, ""]
+            )
             ps
 
 glahicoCommit :: IO Text
