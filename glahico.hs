@@ -1,0 +1,1374 @@
+#!/usr/bin/env cabal
+{- cabal:
+build-depends:
+    aeson
+  , aeson-pretty
+  , base
+  , bytestring
+  , directory
+  , filepath
+  , optparse-applicative
+  , text
+  , time
+  , typed-process
+default-language: GHC2021
+default-extensions:
+    DuplicateRecordFields
+  , LambdaCase
+  , NamedFieldPuns
+  , OverloadedRecordDot
+  , OverloadedStrings
+ghc-options: -Wall
+-}
+{-# LANGUAGE CPP #-}
+
+-- GlaHiCo — opt-in LLM code review for GHC merge requests. See DESIGN.md.
+
+module Main (main) where
+
+import Control.Monad (forM, forM_, unless, void, when)
+import Data.Aeson (FromJSON, ToJSON, Value (..), eitherDecode, object, toJSON, (.=))
+import Data.Aeson qualified as A
+import Data.Aeson.Encode.Pretty qualified as AP
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KM
+import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as BL
+import Data.Char (isAlphaNum, isDigit, isHexDigit, toLower)
+import Data.Foldable (toList)
+import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.List (intercalate, isInfixOf, isPrefixOf, nub, stripPrefix)
+import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe, maybeToList)
+import Data.Text (Text)
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
+import Data.Text.IO qualified as TIO
+import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
+import GHC.Generics (Generic)
+import Options.Applicative
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getHomeDirectory)
+import System.Environment (getEnvironment)
+import System.Exit (ExitCode (..), die)
+import System.FilePath (takeDirectory, takeExtension, takeFileName, (</>))
+import System.IO (BufferMode (..), hPutStrLn, hSetBuffering, stderr, stdout)
+import System.Process.Typed (byteStringInput, nullStream, proc, readProcess, runProcess, setEnv, setStdin, setWorkingDir)
+
+--------------------------------------------------------------------------------
+-- Options & CLI
+--------------------------------------------------------------------------------
+
+data Adhoc = AdhocText Text | AdhocFile FilePath
+
+data Cmd = ReviewCmd Opts | PublishCmd FilePath
+
+data Opts = Opts
+  { target :: String
+  , finderModel :: String
+  , verifierModel :: String
+  , finderEffort :: String
+  , verifierEffort :: String
+  , adhoc :: Maybe Adhoc
+  }
+
+-- | @glahico publish RUN_DIR@ is a subcommand; a bare TARGET still reviews.
+-- No real target collides with the literal word "publish" (targets are
+-- digits, !N, URLs, or ..-ranges), so the fallback is unambiguous.
+cmdP :: Parser Cmd
+cmdP =
+  hsubparser
+    ( command
+        "publish"
+        ( info
+            (PublishCmd <$> strArgument (metavar "RUN_DIR|REVIEW_MD" <> help "Run directory containing review.md, or the review.md file itself"))
+            (progDesc "Publish a run's review.md as a GitLab snippet")
+        )
+        <> metavar "publish"
+    )
+    <|> (ReviewCmd <$> optsP)
+
+optsP :: Parser Opts
+optsP =
+  Opts
+    <$> strArgument
+      (metavar "TARGET" <> help "MR number (14892 or !14892), gitlab.haskell.org MR URL, local commit range (BASE..HEAD), or single commit")
+    <*> strOption
+      (long "finder-model" <> metavar "ALIAS" <> value "opus" <> showDefault <> help "Model for the finder stage")
+    <*> strOption
+      (long "verifier-model" <> metavar "ALIAS" <> value "opus" <> showDefault <> help "Model for the verifier stage")
+    <*> effortOption "finder-effort" "Effort level for the finder stage"
+    <*> effortOption "verifier-effort" "Effort level for the verifier stage"
+    <*> optional
+      ( AdhocText
+          <$> strOption (long "prompt" <> metavar "TEXT" <> help "Extra instructions appended to the finder prompt")
+          <|> AdhocFile
+            <$> strOption (long "prompt-file" <> metavar "PATH" <> help "File with extra instructions appended to the finder prompt")
+      )
+
+effortOption :: String -> String -> Parser String
+effortOption name h =
+  option
+    (eitherReader check)
+    (long name <> metavar "LEVEL" <> value "medium" <> showDefault <> help (h <> " (low|medium|high|xhigh|max)"))
+  where
+    check s
+      | s `elem` ["low", "medium", "high", "xhigh", "max"] = Right s
+      | otherwise = Left ("invalid effort level: " <> s)
+
+--------------------------------------------------------------------------------
+-- Target parsing
+--------------------------------------------------------------------------------
+
+-- | RangeTarget carries the base and head specs; empty sides default to HEAD.
+data Target = MrTarget Text Int | RangeTarget Text Text | CommitTarget Text
+
+parseTarget :: String -> Either String Target
+parseTarget s
+  | null s = Left "empty target"
+  | all isDigit s = Right (MrTarget "ghc/ghc" (read s))
+  | '!' : ds <- s, not (null ds), all isDigit ds = Right (MrTarget "ghc/ghc" (read ds))
+  | Just rest <- stripPrefix "https://gitlab.haskell.org/" s = parseMrUrl rest
+  | "http://" `isPrefixOf` s || "https://" `isPrefixOf` s =
+      Left "only gitlab.haskell.org merge-request URLs are supported"
+  | (a, rest) <- T.breakOn ".." (T.pack s)
+  , Just b <- T.stripPrefix ".." rest =
+      Right (RangeTarget (orHead a) (orHead (T.dropWhile (== '.') b)))
+  -- Anything else is taken as a single commit; git validates the rev.
+  | otherwise = Right (CommitTarget (T.pack s))
+  where
+    orHead t = if T.null t then "HEAD" else t
+
+parseMrUrl :: String -> Either String Target
+parseMrUrl rest
+  | (proj, tl) <- T.breakOn "/-/merge_requests/" (T.pack rest)
+  , Just tl' <- T.stripPrefix "/-/merge_requests/" tl
+  , ds <- T.takeWhile isDigit tl'
+  , not (T.null ds)
+  , not (T.null proj) =
+      Right (MrTarget proj (read (T.unpack ds)))
+  | otherwise = Left ("cannot parse GitLab MR URL: https://gitlab.haskell.org/" <> rest)
+
+--------------------------------------------------------------------------------
+-- Small helpers
+--------------------------------------------------------------------------------
+
+tshow :: Show a => a -> Text
+tshow = T.pack . show
+
+dup :: a -> (a, a)
+dup x = (x, x)
+
+-- | Render a non-negative number with thousands separators: 35742 → "35,742".
+commaSep :: Int -> Text
+commaSep = T.pack . reverse . intercalate "," . chunk . reverse . show
+  where
+    chunk [] = []
+    chunk s = take 3 s : chunk (drop 3 s)
+
+warn :: String -> IO ()
+warn s = hPutStrLn stderr ("Warning: " <> s)
+
+lbsText :: BL.ByteString -> Text
+lbsText = TE.decodeUtf8Lenient . BL.toStrict
+
+-- | Capture stdout; hard error (showing stderr) on failure.
+capture :: String -> [String] -> IO BL.ByteString
+capture cmd args =
+  tryCapture cmd args
+    >>= either (\e -> die (unwords (cmd : args) <> " failed:\n" <> T.unpack e)) pure
+
+tryCapture :: String -> [String] -> IO (Either Text BL.ByteString)
+tryCapture cmd args = do
+  (ec, out, err) <- readProcess (setStdin nullStream (proc cmd args))
+  pure $ case ec of
+    ExitSuccess -> Right out
+    ExitFailure n -> Left ("exit code " <> tshow n <> "\n" <> lbsText err)
+
+-- | Like 'capture', but with extra environment variables (merged into the
+-- inherited environment) and a stdin body. Secrets go in @extraEnv@, never
+-- argv, so the error message cannot leak them.
+captureWith :: [(String, String)] -> BL.ByteString -> String -> [String] -> IO BL.ByteString
+captureWith extraEnv body cmd args = do
+  env <- getEnvironment
+  (ec, out, err) <-
+    readProcess (setEnv (extraEnv ++ env) (setStdin (byteStringInput body) (proc cmd args)))
+  case ec of
+    ExitSuccess -> pure out
+    ExitFailure n ->
+      die (unwords (cmd : args) <> " failed (exit " <> show n <> "):\n" <> T.unpack (lbsText err))
+
+-- | Run with all streams inherited: git's own progress output is the progress story.
+inherit :: String -> [String] -> IO ()
+inherit cmd args = do
+  ec <- runProcess (proc cmd args)
+  case ec of
+    ExitSuccess -> pure ()
+    ExitFailure n -> die (unwords (cmd : args) <> " failed (exit " <> show n <> ")")
+
+gitIn :: FilePath -> [String] -> IO Text
+gitIn dir args = T.strip . lbsText <$> capture "git" ("-C" : dir : args)
+
+gitOut :: FilePath -> [String] -> IO Text
+gitOut dir args = lbsText <$> capture "git" ("-C" : dir : args)
+
+gitLoud :: FilePath -> [String] -> IO ()
+gitLoud dir args = inherit "git" ("-C" : dir : args)
+
+shellQuote :: String -> String
+shellQuote s
+  | not (null s) && all (`elem` safe) s = s
+  | otherwise = "'" <> concatMap esc s <> "'"
+  where
+    safe = ['a' .. 'z'] ++ ['A' .. 'Z'] ++ ['0' .. '9'] ++ "._-/=:+,@%"
+    esc '\'' = "'\\''"
+    esc c = [c]
+
+--------------------------------------------------------------------------------
+-- JSON access
+--------------------------------------------------------------------------------
+
+vKey :: Key.Key -> Value -> Maybe Value
+vKey k (Object o) = KM.lookup k o
+vKey _ _ = Nothing
+
+vText :: Key.Key -> Value -> Maybe Text
+vText k v = case vKey k v of
+  Just (String t) -> Just t
+  _ -> Nothing
+
+vInt :: Key.Key -> Value -> Maybe Int
+vInt k v = case vKey k v of
+  Just (Number n) -> Just (round n)
+  _ -> Nothing
+
+vArray :: Key.Key -> Value -> [Value]
+vArray k v = case vKey k v of
+  Just (Array xs) -> toList xs
+  _ -> []
+
+vBoolIs :: Key.Key -> Bool -> Value -> Bool
+vBoolIs k b v = vKey k v == Just (Bool b)
+
+reqText :: String -> Key.Key -> Value -> IO Text
+reqText what k v = maybe (die (what <> ": missing field " <> show k)) pure (vText k v)
+
+--------------------------------------------------------------------------------
+-- glab api
+--------------------------------------------------------------------------------
+
+tryGlabJson :: String -> IO (Either Text Value)
+tryGlabJson endpoint = do
+  r <- tryCapture "glab" ["api", "--hostname", "gitlab.haskell.org", endpoint]
+  pure $ case r of
+    Left e -> Left e
+    Right out -> either (Left . T.pack) Right (eitherDecode out)
+
+glabJson :: String -> IO Value
+glabJson endpoint =
+  tryGlabJson endpoint
+    >>= either (\e -> die ("glab api " <> endpoint <> " failed:\n" <> T.unpack e)) pure
+
+--------------------------------------------------------------------------------
+-- Publishing snippets
+--------------------------------------------------------------------------------
+
+-- | URL-encoded project whose snippets host published reviews.
+publishProject :: String
+publishProject = "sjakobi%2FGlaHiCo"
+
+-- | Snippet creation needs a write-capable token (scope @api@); the
+-- glab-configured token is read-only by design. glab prefers GITLAB_TOKEN
+-- over its config, so only this step gains write access.
+--
+-- The token file is root-owned so that agents running as the user cannot
+-- read it; sudo prompts for the password on the controlling tty (and fails
+-- immediately when there is none, i.e. in agent-spawned processes).
+publishToken :: FilePath -> IO String
+publishToken dataDir = do
+  let path = dataDir </> "gitlab-token"
+  exists <- doesFileExist path
+  unless exists $
+    die
+      ( path <> " not found.\n"
+          <> "Create an access token with scope `api` (a project access token on\n"
+          <> "sjakobi/GlaHiCo is preferred over a personal one), save it there\n"
+          <> "(single line), then make it root-only:\n"
+          <> "  sudo chown root:root " <> path <> " && sudo chmod 600 " <> path
+      )
+  putStrLn "Reading token (sudo will prompt for your password) ..."
+  T.unpack . T.strip . lbsText <$> capture "sudo" ["cat", path]
+
+-- | The argument may be the run directory or the review.md file itself.
+runPublish :: FilePath -> FilePath -> IO ()
+runPublish dataDir arg = do
+  argIsFile <- doesFileExist arg
+  let runDir = if argIsFile then takeDirectory arg else arg
+      reviewPath = if argIsFile then arg else runDir </> "review.md"
+      snippetPath = runDir </> "snippet.json"
+  haveReview <- doesFileExist reviewPath
+  unless haveReview $ die (reviewPath <> " not found")
+  published <- doesFileExist snippetPath
+  when published $ do
+    prev <- eitherDecode <$> BL.readFile snippetPath
+    let url = either (const "?") (fromMaybe "?" . vText "web_url") prev
+    die
+      ( snippetPath <> " already exists (published at " <> T.unpack url <> ").\n"
+          <> "Delete it to publish this run again."
+      )
+  review <- TIO.readFile reviewPath
+  let title = case T.lines review of
+        (l : _) | Just t <- T.stripPrefix "# " l -> t
+        _ -> "GlaHiCo review"
+      body =
+        A.encode $
+          object
+            [ "title" .= title
+            , "visibility" .= ("internal" :: Text)
+            , "files" .= [object ["file_path" .= ("review.md" :: Text), "content" .= review]]
+            ]
+  token <- publishToken dataDir
+  out <-
+    captureWith
+      [("GITLAB_TOKEN", token)]
+      body
+      "glab"
+      [ "api"
+      , "--hostname"
+      , "gitlab.haskell.org"
+      , "-X"
+      , "POST"
+      , "-H"
+      , "Content-Type: application/json"
+      , "--input"
+      , "-"
+      , "projects/" <> publishProject <> "/snippets"
+      ]
+  resp <- either (\e -> die ("snippet response: " <> e)) pure (eitherDecode out)
+  sid <- maybe (die "snippet response: missing field id") pure (vInt "id" resp)
+  url <- reqText "snippet response" "web_url" resp
+  now <- getCurrentTime
+  BL.writeFile snippetPath $
+    AP.encodePretty $
+      object
+        [ "id" .= sid
+        , "web_url" .= url
+        , "project" .= publishProject
+        , "published_at" .= formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now
+        ]
+  putStrLn (T.unpack url)
+
+--------------------------------------------------------------------------------
+-- Mirror & worktree
+--------------------------------------------------------------------------------
+
+data MrData = MrData {project :: Text, iid :: Int, meta :: Value}
+
+data Resolved = Resolved
+  { slug :: String
+  , worktree :: FilePath
+  , baseSha :: Text
+  , headSha :: Text
+  , mr :: Maybe MrData
+  }
+
+urlEncodeProject :: Text -> String
+urlEncodeProject = T.unpack . T.replace "/" "%2F"
+
+projectSlug :: Text -> String
+projectSlug = T.unpack . T.replace "/" "-"
+
+ensureMirror :: FilePath -> IO ()
+ensureMirror mirror = do
+  exists <- doesDirectoryExist mirror
+  unless exists $ do
+    putStrLn ("One-time setup: mirroring ghc/ghc (multiple GB) into " <> mirror <> " ...")
+    createDirectoryIfMissing True (takeDirectory mirror)
+    inherit "git" ["clone", "--mirror", "git@gitlab.haskell.org:ghc/ghc.git", mirror]
+
+ensureRemote :: FilePath -> Text -> IO String
+ensureRemote mirror project = do
+  let name = projectSlug project
+      url = "git@gitlab.haskell.org:" <> T.unpack project <> ".git"
+  r <- tryCapture "git" ["-C", mirror, "remote", "get-url", name]
+  case r of
+    Right _ -> pure ()
+    Left _ -> void (capture "git" ["-C", mirror, "remote", "add", name, url])
+  pure name
+
+prepareWorktree :: FilePath -> FilePath -> FilePath -> Text -> IO ()
+prepareWorktree subStores srcRepo wt headSha = do
+  exists <- doesDirectoryExist wt
+  if exists
+    then do
+      dirty <- gitIn wt ["status", "--porcelain"]
+      unless (T.null dirty) $
+        warn ("worktree " <> wt <> " is dirty; agents are not expected to write to it. Not cleaning up.")
+      void (gitIn wt ["checkout", "--detach", T.unpack headSha])
+    else do
+      createDirectoryIfMissing True (takeDirectory wt)
+      void (gitIn srcRepo ["worktree", "prune"])
+      gitLoud srcRepo ["worktree", "add", "--detach", wt, T.unpack headSha]
+  initSubmodules subStores wt
+
+-- | Remove a worktree after a successful run (~350M each with GHC
+-- submodules; recreating one is seconds thanks to the submodule stores).
+-- A dirty worktree is kept: agents are not expected to write to it, so
+-- unexpected state is preserved for inspection, as in 'prepareWorktree'.
+removeWorktree :: FilePath -> IO ()
+removeWorktree wt = do
+  dirty <- gitIn wt ["status", "--porcelain"]
+  if not (T.null dirty)
+    then warn ("worktree " <> wt <> " is dirty; not removing it.")
+    else do
+      commonDir <- gitIn wt ["rev-parse", "--git-common-dir"]
+      -- --force: git refuses to remove worktrees containing submodules
+      -- without it. Also cleans <commonDir>/worktrees/<name>/ (where the
+      -- submodule gitdirs live), which a bare rm -rf would leak.
+      r <- tryCapture "git" ["--git-dir=" <> T.unpack commonDir, "worktree", "remove", "--force", wt]
+      case r of
+        Right _ -> putStrLn ("Removed worktree " <> wt)
+        Left e -> warn ("failed to remove worktree " <> wt <> ":\n" <> T.unpack e)
+
+submoduleNames :: FilePath -> IO [String]
+submoduleNames wt = do
+  out <- gitOut wt ["config", "-f", ".gitmodules", "--get-regexp", "\\.path$"]
+  pure
+    [ T.unpack n
+    | l <- T.lines out
+    , let key = T.takeWhile (/= ' ') l
+    , Just n <- [T.stripPrefix "submodule." key >>= T.stripSuffix ".path"]
+    ]
+
+{- Note [Fast submodule checkout]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A plain `git submodule update --init` in a fresh worktree clones all ~33 GHC
+submodules from gitlab.haskell.org — minutes per MR. Instead we keep one
+persistent mirror per submodule under <dataDir>/submodules/ (cloned from
+upstream once) and point each `submodule.<name>.url` at it via `-c`, so the
+checkout clones locally in seconds. The overrides are command-line-only; the
+config written by `git submodule init` keeps the canonical URLs.
+
+Stores can lack commits an MR needs (submodule bumps). On failure we fetch
+all stores and retry; if that still fails, `git submodule sync` + a plain
+update falls back to the canonical remotes. The final sync also resets each
+module's origin from the store path back to its canonical URL, so later
+incremental updates in a reused worktree fetch from upstream, not the store.
+-}
+initSubmodules :: FilePath -> FilePath -> IO ()
+initSubmodules stores wt = do
+  hasModules <- doesFileExist (wt </> ".gitmodules")
+  when hasModules $ do
+    putStrLn "Initialising submodules ..."
+    names <- submoduleNames wt
+    void (gitIn wt ["submodule", "init"])
+    cfgs <- fmap concat . forM names $ \n -> do
+      let store = stores </> n
+      storeExists <- doesDirectoryExist store
+      unless storeExists $ do
+        url <- gitIn wt ["config", "submodule." <> n <> ".url"]
+        putStrLn ("One-time setup: mirroring submodule " <> n <> " ...")
+        createDirectoryIfMissing True (takeDirectory store)
+        inherit "git" ["clone", "--mirror", T.unpack url, store]
+      pure ["-c", "submodule." <> n <> ".url=" <> store]
+    let update =
+          tryCapture "git" $
+            ["-C", wt, "-c", "protocol.file.allow=always"]
+              <> cfgs
+              <> ["submodule", "update", "--init", "--jobs", "4"]
+    r <- update >>= \case
+      Right ok -> pure (Right ok)
+      Left _ -> do
+        putStrLn "Refreshing submodule stores ..."
+        forM_ names $ \n ->
+          void (tryCapture "git" ["-C", stores </> n, "fetch", "--prune", "--quiet"])
+        update
+    case r of
+      Right _ -> void (gitIn wt ["submodule", "sync", "--quiet"])
+      Left _ -> do
+        warn "local submodule stores were insufficient; falling back to canonical remotes"
+        void (gitIn wt ["submodule", "sync", "--quiet"])
+        gitLoud wt ["submodule", "update", "--init", "--jobs", "4"]
+
+resolveMr :: FilePath -> Text -> Int -> IO Resolved
+resolveMr dataDir project iid = do
+  let mirror = dataDir </> "ghc.git"
+      enc = urlEncodeProject project
+      slug = projectSlug project <> "-mr-" <> show iid
+  projMeta <- glabJson ("projects/" <> enc)
+  visibility <- reqText "project metadata" "visibility" projMeta
+  unless (visibility == "public") $
+    die
+      ( "project " <> T.unpack project <> " has visibility " <> show visibility
+          <> "; GlaHiCo only reviews public projects"
+      )
+  meta <- glabJson ("projects/" <> enc <> "/merge_requests/" <> show iid)
+  targetBranch <- reqText "MR metadata" "target_branch" meta
+  ensureMirror mirror
+  remote <- if project == "ghc/ghc" then pure "origin" else ensureRemote mirror project
+  putStrLn ("Fetching !" <> show iid <> " from " <> T.unpack project <> " ...")
+  gitLoud
+    mirror
+    [ "fetch"
+    , remote
+    , "+refs/merge-requests/" <> show iid <> "/head:refs/glahico/" <> slug
+    , "+refs/heads/" <> T.unpack targetBranch <> ":refs/glahico/" <> slug <> "-base"
+    ]
+  headSha <- gitIn mirror ["rev-parse", "refs/glahico/" <> slug]
+  case vText "sha" meta of
+    Just apiSha
+      | apiSha /= headSha ->
+          warn
+            ( "fetched MR head " <> T.unpack headSha <> " differs from API sha " <> T.unpack apiSha
+                <> " (the MR may have been updated mid-run)"
+            )
+    _ -> pure ()
+  baseSha <- gitIn mirror ["merge-base", "refs/glahico/" <> slug, "refs/glahico/" <> slug <> "-base"]
+  let wt = dataDir </> "wt" </> slug
+  prepareWorktree (dataDir </> "submodules") mirror wt headSha
+  pure Resolved {slug, worktree = wt, baseSha, headSha, mr = Just (MrData project iid meta)}
+
+-- | rev-parse a spec; if unknown locally, try fetching it from the repo's
+-- remotes (direct-SHA fetch for full hashes, plain fetch otherwise) and retry.
+resolveRev :: FilePath -> Text -> IO Text
+resolveRev repo spec = do
+  let revParse = tryCapture "git" ["-C", repo, "rev-parse", "--verify", T.unpack spec <> "^{commit}"]
+  revParse >>= \case
+    Right sha -> pure (T.strip (lbsText sha))
+    Left e -> do
+      remotes <- T.words <$> gitIn repo ["remote"]
+      when (null remotes) $
+        die ("git rev-parse " <> T.unpack spec <> " failed:\n" <> T.unpack e)
+      putStrLn ("Rev " <> T.unpack spec <> " not found locally; fetching from remotes ...")
+      -- Servers only accept direct fetches of full SHAs, so strip any
+      -- ^/~ suffix (the base spec of a single-commit target is <sha>^).
+      let bare = T.takeWhile (\c -> c /= '^' && c /= '~') spec
+          isSha = T.length bare == 40 && T.all isHexDigit bare
+          fetch args = either (const False) (const True) <$> tryCapture "git" (["-C", repo, "fetch"] <> args)
+      gotSha <-
+        if isSha
+          then anyM (\r -> fetch [T.unpack r, T.unpack bare]) remotes
+          else pure False
+      unless gotSha $
+        mapM_ (\r -> fetch [T.unpack r]) remotes
+      gitIn repo ["rev-parse", "--verify", T.unpack spec <> "^{commit}"]
+  where
+    anyM f = foldr (\x rest -> f x >>= \ok -> if ok then pure True else rest) (pure False)
+
+resolveLocal :: FilePath -> Text -> Text -> IO Resolved
+resolveLocal dataDir baseSpec headSpec = do
+  repoTop <- T.strip . lbsText <$> capture "git" ["rev-parse", "--show-toplevel"]
+  let repo = T.unpack repoTop
+  headSha <- resolveRev repo headSpec
+  baseTip <- resolveRev repo baseSpec -- head first: one fetch covers <sha>^ too
+  baseSha <- gitIn repo ["merge-base", T.unpack baseTip, T.unpack headSha]
+  let slug =
+        "local-" <> takeFileName repo <> "-"
+          <> T.unpack (T.take 7 baseSha) <> ".." <> T.unpack (T.take 7 headSha)
+      wt = dataDir </> "wt" </> slug
+  prepareWorktree (dataDir </> "submodules") repo wt headSha
+  pure Resolved {slug, worktree = wt, baseSha, headSha, mr = Nothing}
+
+--------------------------------------------------------------------------------
+-- Context pack
+--------------------------------------------------------------------------------
+
+-- | Truncate at a line boundary within the byte cap, marking the cut in the
+-- content and reporting it for the disclosure header.
+capBytes :: Text -> Int -> Text -> (Text, Maybe Text)
+capBytes name cap content
+  | BS.length bs <= cap = (content, Nothing)
+  | otherwise = (capped, Just (name <> " truncated at " <> tshow cap <> " bytes"))
+  where
+    bs = TE.encodeUtf8 content
+    cut = BS.take cap bs
+    atNewline = maybe cut (`BS.take` cut) (BS.elemIndexEnd 0x0a cut)
+    capped =
+      TE.decodeUtf8Lenient atNewline
+        <> "\n[truncated: " <> name <> " exceeded " <> tshow cap <> " bytes]\n"
+
+authorOf :: Value -> Text
+authorOf v = case vKey "author" v of
+  Just a -> fromMaybe "?" (vText "name" a) <> maybe "" (\u -> " (@" <> u <> ")") (vText "username" a)
+  Nothing -> "?"
+
+mrMarkdown :: MrData -> Text
+mrMarkdown md =
+  T.unlines
+    [ "# " <> fromMaybe "(no title)" (vText "title" m) <> " (!" <> tshow md.iid <> ")"
+    , ""
+    , "- Project: " <> md.project
+    , "- Author: " <> authorOf m
+    , "- Branches: " <> branch "source_branch" <> " → " <> branch "target_branch"
+    , "- Labels: " <> (if T.null labels then "(none)" else labels)
+    , "- URL: " <> fromMaybe "" (vText "web_url" m)
+    , ""
+    , "## Description"
+    , ""
+    , fromMaybe "" (vText "description" m)
+    ]
+  where
+    m = md.meta
+    branch k = fromMaybe "?" (vText k m)
+    labels = T.intercalate ", " [l | String l <- vArray "labels" m]
+
+buildContext :: Resolved -> FilePath -> IO (FilePath, [Text])
+buildContext res runDir = do
+  let ctx = runDir </> "context"
+      range = T.unpack res.baseSha <> ".." <> T.unpack res.headSha
+  createDirectoryIfMissing True ctx
+  truncsRef <- newIORef []
+  let putCapped :: FilePath -> Text -> Int -> Text -> IO ()
+      putCapped path name cap content = do
+        let (content', mnote) = capBytes name cap content
+        forM_ mnote (\note -> modifyIORef' truncsRef (++ [note]))
+        TIO.writeFile path content'
+  diff <- gitOut res.worktree ["diff", range]
+  putCapped (ctx </> "diff.patch") "diff.patch" (400 * 1024) diff
+  stat <- gitOut res.worktree ["diff", "--stat", range]
+  putCapped (ctx </> "diffstat.txt") "diffstat.txt" (32 * 1024) stat
+  commits <- gitOut res.worktree ["log", "--reverse", range]
+  putCapped (ctx </> "commits.txt") "commits.txt" (100 * 1024) commits
+  forM_ res.mr $ \md ->
+    putCapped (ctx </> "mr.md") "mr.md" (50 * 1024) (mrMarkdown md)
+  truncs <- readIORef truncsRef
+  pure (ctx, truncs)
+
+--------------------------------------------------------------------------------
+-- Prompt loading & JSON schemas
+--------------------------------------------------------------------------------
+
+-- Cabal resolves the script to an absolute path before compiling, so __FILE__
+-- locates the checkout this binary was built from (prompts/, git metadata).
+scriptDir :: FilePath
+scriptDir = takeDirectory __FILE__
+
+loadPrompt :: FilePath -> Bool -> IO Text
+loadPrompt name isMr = do
+  let path = scriptDir </> "prompts" </> name
+  ok <- doesFileExist path
+  unless ok (die ("prompt file not found: " <> path))
+  raw <- TIO.readFile path
+  pure $
+    if isMr
+      then raw
+      else T.unlines (filter (not . ("[MR targets only]" `T.isInfixOf`)) (T.lines raw))
+
+renderFinderPrompt :: FilePath -> Bool -> Maybe Text -> IO Text
+renderFinderPrompt ctxDir isMr adhocText = do
+  raw <- loadPrompt "finder.md" isMr
+  let p = T.replace "{ctx}" (T.pack ctxDir) raw
+  pure $ case adhocText of
+    Nothing -> p
+    Just extra -> p <> "\n## Additional instructions for this run\n\n" <> extra <> "\n"
+
+renderVerifierPrompt :: FilePath -> Bool -> Finding -> IO Text
+renderVerifierPrompt ctxDir isMr f = do
+  raw <- loadPrompt "verifier.md" isMr
+  pure (T.replace "{finding}" (lbsText (AP.encodePretty f)) (T.replace "{ctx}" (T.pack ctxDir) raw))
+
+jstr :: Text -> Value
+jstr = String
+
+finderSchema :: Value
+finderSchema =
+  object
+    [ "type" .= jstr "object"
+    , "additionalProperties" .= False
+    , "required" .= [jstr "findings"]
+    , "properties"
+        .= object
+          [ "findings"
+              .= object
+                [ "type" .= jstr "array"
+                , "items"
+                    .= object
+                      [ "type" .= jstr "object"
+                      , "additionalProperties" .= False
+                      , "required" .= map jstr ["id", "title", "file", "line", "claim", "evidence"]
+                      , "properties"
+                          .= object
+                            [ "id" .= tobj "string"
+                            , "title" .= tobj "string"
+                            , "file" .= tobj "string"
+                            , "line" .= tobj "integer"
+                            , "claim" .= tobj "string"
+                            , "evidence" .= tobj "string"
+                            ]
+                      ]
+                ]
+          ]
+    ]
+  where
+    tobj t = object ["type" .= jstr t]
+
+verifierSchema :: Value
+verifierSchema =
+  object
+    [ "type" .= jstr "object"
+    , "additionalProperties" .= False
+    , "required" .= map jstr ["verdict", "relevant", "disprove_evidence", "prove_evidence", "relevance_rationale", "writeup", "snippets"]
+    , "properties"
+        .= object
+          [ "verdict" .= object ["type" .= jstr "string", "enum" .= map jstr ["confirmed", "uncertain", "refuted"]]
+          , "relevant" .= object ["type" .= jstr "boolean"]
+          , "disprove_evidence" .= object ["type" .= jstr "string"]
+          , "prove_evidence" .= object ["type" .= jstr "string"]
+          , "relevance_rationale" .= object ["type" .= jstr "string"]
+          , "writeup" .= object ["type" .= jstr "string"]
+          , "snippets"
+              .= object
+                [ "type" .= jstr "array"
+                , "items"
+                    .= object
+                      [ "type" .= jstr "object"
+                      , "additionalProperties" .= False
+                      , "required" .= map jstr ["file", "first_line", "last_line", "key_line"]
+                      , "properties"
+                          .= object
+                            [ "file" .= object ["type" .= jstr "string"]
+                            , "first_line" .= object ["type" .= jstr "integer"]
+                            , "last_line" .= object ["type" .= jstr "integer"]
+                            , "key_line" .= object ["type" .= jstr "integer"]
+                            ]
+                      ]
+                ]
+          ]
+    ]
+
+--------------------------------------------------------------------------------
+-- Findings & verdicts
+--------------------------------------------------------------------------------
+
+data Finding = Finding
+  { id :: Text
+  , title :: Text
+  , file :: Text
+  , line :: Int
+  , claim :: Text
+  , evidence :: Text
+  }
+  deriving (Generic, Show)
+
+instance FromJSON Finding
+
+instance ToJSON Finding
+
+newtype Findings = Findings {findings :: [Finding]}
+  deriving (Generic, Show)
+
+instance FromJSON Findings
+
+instance ToJSON Findings
+
+-- | A line range the verifier wants shown to the reader; the report quotes
+-- the range from the head checkout rather than trusting model-quoted code.
+-- @key_line@ is the core spot within the range, marked with an arrow comment.
+data Snippet = Snippet
+  { file :: Text
+  , first_line :: Int
+  , last_line :: Int
+  , key_line :: Int
+  }
+  deriving (Generic, Show)
+
+instance FromJSON Snippet
+
+instance ToJSON Snippet
+
+data Verdict = Verdict
+  { verdict :: Text
+  , relevant :: Bool
+  , disprove_evidence :: Text
+  , prove_evidence :: Text
+  , relevance_rationale :: Text
+  , writeup :: Text
+  , snippets :: [Snippet]
+  }
+  deriving (Generic, Show)
+
+instance FromJSON Verdict
+
+instance ToJSON Verdict
+
+embedFinding :: Finding -> Verdict -> Value
+embedFinding f v = case toJSON v of
+  Object o -> Object (KM.insert "finding" (toJSON f) o)
+  x -> x
+
+decodeStructured :: FromJSON a => String -> FilePath -> Value -> IO a
+decodeStructured what envelopePath v = case A.fromJSON v of
+  A.Success x -> pure x
+  A.Error e ->
+    die
+      ( what <> ": structured output does not match the expected shape: " <> e
+          <> "\nraw envelope preserved at: " <> envelopePath
+      )
+
+--------------------------------------------------------------------------------
+-- runClaude
+--------------------------------------------------------------------------------
+
+-- | Token counts for one model within one claude call (or summed over calls).
+data ModelTokens = ModelTokens
+  { input :: Int
+  , cacheCreation :: Int
+  , cacheRead :: Int
+  , output :: Int
+  }
+
+addTokens :: ModelTokens -> ModelTokens -> ModelTokens
+addTokens a b =
+  ModelTokens
+    { input = a.input + b.input
+    , cacheCreation = a.cacheCreation + b.cacheCreation
+    , cacheRead = a.cacheRead + b.cacheRead
+    , output = a.output + b.output
+    }
+
+-- | Sum per-call usage lists into one per-model list (first-seen model order).
+sumUsage :: [[(Text, ModelTokens)]] -> [(Text, ModelTokens)]
+sumUsage uss =
+  [ (m, foldr1 addTokens [t | (m', t) <- pairs, m' == m])
+  | m <- nub (map fst pairs)
+  ]
+  where
+    pairs = concat uss
+
+data ClaudeRun = ClaudeRun
+  { structured :: Value
+  , usage :: [(Text, ModelTokens)]
+  , finalContext :: Maybe Int
+  }
+
+allowedGitTools :: [String]
+allowedGitTools =
+  [ "Bash(git log:*)"
+  , "Bash(git show:*)"
+  , "Bash(git diff:*)"
+  , "Bash(git grep:*)"
+  , "Bash(git blame:*)"
+  , "Bash(git cat-file:*)"
+  , "Bash(git rev-parse:*)"
+  , "Bash(git merge-base:*)"
+  ]
+
+runClaude :: FilePath -> FilePath -> FilePath -> String -> String -> Value -> Text -> IO ClaudeRun
+runClaude wt ctxDir envelopePath model effort schema prompt = do
+  hostEnv <- getEnvironment
+  let argv =
+        [ "-p"
+        , T.unpack prompt
+        , "--model"
+        , model
+        , "--effort"
+        , effort
+        , "--output-format"
+        , "json"
+        , "--json-schema"
+        , T.unpack (lbsText (A.encode schema))
+        , "--tools"
+        , "Read,Glob,Grep,Bash"
+        , "--allowedTools"
+        , intercalate "," allowedGitTools
+        , "--add-dir" -- context/ lives outside the worktree; without this, dontAsk denies the reads
+        , ctxDir
+        , "--permission-mode"
+        , "dontAsk"
+        , "--setting-sources"
+        , ""
+        , "--disable-slash-commands"
+        , "--strict-mcp-config"
+        , "--no-session-persistence"
+        ]
+      env' =
+        ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1")
+          : filter ((/= "CLAUDE_CODE_DISABLE_AUTO_MEMORY") . fst) hostEnv
+      replay = "replay: (cd " <> shellQuote wt <> " && " <> unwords (map shellQuote ("claude" : argv)) <> ")"
+      failWith msg = die (msg <> "\nraw output preserved at: " <> envelopePath <> "\n" <> replay)
+  (ec, out, errOut) <-
+    readProcess (setStdin nullStream (setWorkingDir wt (setEnv env' (proc "claude" argv))))
+  BL.writeFile envelopePath out
+  case ec of
+    ExitFailure n -> failWith ("claude exited with code " <> show n <> ":\n" <> T.unpack (lbsText errOut))
+    ExitSuccess -> pure ()
+  v <- either (\e -> failWith ("cannot parse claude output as JSON: " <> e)) pure (eitherDecode out)
+  unless
+    ( vText "type" v == Just "result"
+        && vText "subtype" v == Just "success"
+        && vBoolIs "is_error" False v
+    )
+    (failWith "claude result envelope does not indicate success")
+  structured <- case vKey "structured_output" v of
+    Just s | s /= Null -> pure s
+    _ -> failWith "claude result envelope has no structured_output"
+  let i k mv = fromMaybe 0 (vInt k mv)
+      usage = case vKey "modelUsage" v of
+        Just (Object o) ->
+          [ ( Key.toText k
+            , ModelTokens
+                { input = i "inputTokens" mv
+                , cacheCreation = i "cacheCreationInputTokens" mv
+                , cacheRead = i "cacheReadInputTokens" mv
+                , output = i "outputTokens" mv
+                }
+            )
+          | (k, mv) <- KM.toList o
+          ]
+        _ -> []
+      -- The last request's input + cache tokens approximate the final context
+      -- size; fall back to the call totals when iterations are absent.
+      finalContext = do
+        u <- vKey "usage" v
+        let src = case vArray "iterations" u of
+              [] -> u
+              its -> last its
+        case mapMaybe (`vInt` src) ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"] of
+          [] -> Nothing
+          xs -> Just (sum xs)
+  pure ClaudeRun {structured, usage, finalContext}
+
+--------------------------------------------------------------------------------
+-- Report
+--------------------------------------------------------------------------------
+
+data Stage = Stage
+  { alias :: String
+  , effortLevel :: String
+  , ranUsage :: [(Text, ModelTokens)]
+  , finalContexts :: [Int] -- one entry per claude call in this stage
+  }
+
+-- | The harness makes auxiliary calls with haiku; the disclosure omits those
+-- unless haiku itself was requested. If filtering would empty a non-empty
+-- list, keep it unfiltered rather than claiming the stage ran no calls.
+disclosedUsage :: String -> [(Text, ModelTokens)] -> [(Text, ModelTokens)]
+disclosedUsage alias us
+  | "haiku" `isInfixOf` alias = us
+  | null filtered = us
+  | otherwise = filtered
+  where
+    filtered = [u | u@(m, _) <- us, not ("haiku" `T.isInfixOf` m)]
+
+-- | A snippet as it appears in the review: label, fence info string, the
+-- label as a comment line in the file's language (Nothing when we don't know
+-- its comment syntax), and the quoted text (Nothing when the range couldn't
+-- be resolved in the worktree).
+data RenderedSnippet = RenderedSnippet
+  { label :: Text
+  , lang :: Text
+  , commentedLabel :: Maybe Text
+  , body :: Maybe Text
+  }
+
+snippetCap :: Int
+snippetCap = 50
+
+-- | Quote a snippet range from the head worktree. The range is model output,
+-- so a bad path or empty range degrades to an "unavailable" marker instead of
+-- failing the run; ranges are clamped to the file and capped at 'snippetCap'.
+extractSnippet :: FilePath -> Snippet -> IO RenderedSnippet
+extractSnippet worktree s = do
+  let label = s.file <> ":" <> tshow s.first_line <> "-" <> tshow s.last_line
+      path = worktree </> T.unpack s.file
+      -- .T files are the Python testsuite driver files.
+      (lang, commentPrefix) = case takeExtension (T.unpack s.file) of
+        e
+          | e `elem` [".hs", ".lhs", ".hs-boot"] -> ("haskell", Just "-- ")
+          | e `elem` [".c", ".h", ".cmm"] -> ("c", Just "// ")
+          | e `elem` [".py", ".T"] -> ("python", Just "# ")
+          | otherwise -> ("", Nothing)
+      commentedLabel = (<> label) <$> commentPrefix
+  exists <- doesFileExist path
+  body <-
+    if not exists
+      then pure Nothing
+      else do
+        ls <- T.lines . TE.decodeUtf8Lenient <$> BS.readFile path
+        let lo = max 1 s.first_line
+            wanted = s.last_line - lo + 1
+            picked = take (min snippetCap wanted) (drop (lo - 1) ls)
+            truncated = wanted > snippetCap && length picked == snippetCap
+            -- Arrow-comment marker on the key line, when we know the
+            -- language's comment syntax.
+            marked = case commentPrefix of
+              Nothing -> picked
+              Just p ->
+                [ if n == s.key_line then l <> "  " <> T.strip p <> " <========== HERE" else l
+                | (n, l) <- zip [lo ..] picked
+                ]
+        pure $
+          if null picked
+            then Nothing
+            else Just (T.unlines (marked ++ ["[snippet truncated]" | truncated]))
+  pure RenderedSnippet {label, lang, commentedLabel, body}
+
+data Report = Report
+  { targetDesc :: Text
+  , titleSuffix :: Text
+  , baseSha :: Text
+  , headSha :: Text
+  , commit :: Text
+  , finderStage :: Stage
+  , verifierStage :: Stage
+  , truncations :: [Text]
+  , totalFindings :: Int
+  , unverified :: Int
+  , verified :: [(Finding, Verdict, [RenderedSnippet])]
+  , adhocPrompt :: Maybe Text
+  , uncommittedPrompts :: [(String, Text)]
+  }
+
+-- GitLab/GitHub heading anchor: lowercase, drop everything that isn't
+-- alphanumeric, space, hyphen or underscore, then spaces become hyphens.
+headingAnchor :: Text -> Text
+headingAnchor =
+  T.map (\c -> if c == ' ' then '-' else c)
+    . T.filter (\c -> isAlphaNum c || c `elem` (" -_" :: String))
+    . T.map toLower
+
+-- Long enough that no backtick run in the body can close the fence early.
+fenceFor :: Text -> Text
+fenceFor body = T.replicate (max 4 (longest + 1)) "`"
+  where
+    longest = maximum (0 : [T.length g | g <- T.group body, T.head g == '`'])
+
+renderReview :: Report -> Text
+renderReview r =
+  T.unlines
+    ( headerLines ++ feedbackLines ++ findingsSection ++ lowSection ++ lowRelSection ++ adhocSection
+        ++ dirtySection ++ disclosureSection ++ disclaimerLines
+    )
+  where
+    confirmedRel = [fv | fv@(_, v, _) <- r.verified, v.verdict == "confirmed", v.relevant]
+    uncertainRel = [fv | fv@(_, v, _) <- r.verified, v.verdict == "uncertain", v.relevant]
+    lowRel = [fv | fv@(_, v, _) <- r.verified, not v.relevant, v.verdict /= "refuted"]
+    backticked t = "`" <> t <> "`"
+    stageLine name (st :: Stage) =
+      "- " <> name <> ": requested " <> backticked (T.pack st.alias)
+        <> " at effort " <> backticked (T.pack st.effortLevel) <> "; ran "
+        <> ranPart st.ranUsage
+        <> contextPart st.finalContexts
+    ranPart [] = "no calls"
+    ranPart us = T.intercalate ", " [backticked m <> " (" <> tokensText t <> ")" | (m, t) <- us]
+    tokensText (t :: ModelTokens) =
+      commaSep (t.input + t.cacheCreation + t.cacheRead) <> " tokens in ("
+        <> commaSep t.cacheRead <> " cache reads), " <> commaSep t.output <> " out"
+    contextPart [] = ""
+    contextPart [c] = "; final context ≈" <> commaSep c <> " tokens"
+    contextPart cs =
+      "; final context ≈" <> commaSep (maximum cs) <> " tokens max across "
+        <> tshow (length cs) <> " calls"
+    findingsLine
+      | r.totalFindings == 0 = "none reported by the finder"
+      | otherwise =
+          tshow r.totalFindings <> " reported by the finder; "
+            <> T.intercalate "; " (outcomeParts ++ unverifiedParts)
+    outcomeParts =
+      [tshow (length confirmedRel) <> " high-confidence" | not (null confirmedRel)]
+        ++ [ tshow (length uncertainRel) <> " uncertain but judged relevant (included as low-confidence)"
+           | not (null uncertainRel)
+           ]
+        ++ [ tshow (length lowRel) <> " judged low-relevance (included)"
+           | not (null lowRel)
+           ]
+        ++ [ tshow (length droppedFvs) <> " dropped ("
+               <> T.intercalate ", " [f.id <> ": refuted" | (f, _) <- droppedFvs]
+               <> ")"
+           | not (null droppedFvs)
+           ]
+    unverifiedParts =
+      [ tshow r.unverified <> " not verified (preserved in findings.json in the run directory)"
+      | r.unverified > 0
+      ]
+    droppedFvs = [(f, v) | (f, v, _) <- r.verified, v.verdict == "refuted"]
+    block extraLines (f, v, snips) =
+      [ "### " <> f.id <> ": " <> f.title
+      , ""
+      ]
+        ++ concatMap snippetLines snips
+        ++ [ v.writeup
+           , ""
+           ]
+        ++ extraLines v
+    -- Fences are sized via fenceFor so the body can't break out. The location
+    -- goes inside the fence as a comment when we know the language's comment
+    -- syntax; a label line above is the fallback.
+    snippetLines (s :: RenderedSnippet) = case s.body of
+      Nothing -> [backticked s.label, "", "_snippet unavailable_", ""]
+      Just b ->
+        let body = T.stripEnd b
+            fence = fenceFor body
+         in case s.commentedLabel of
+              Just c -> [fence <> s.lang, c, body, fence, ""]
+              Nothing -> [backticked s.label, "", fence <> s.lang, body, fence, ""]
+    headerLines = ["# GlaHiCo review: " <> r.titleSuffix, ""] ++ summaryLines
+    feedbackLines =
+      [ "_Your feedback can help to make this service better! A quick reply"
+          <> " like `f1: noise, f2: false positive` helps, and so does"
+          <> " pointing out anything the review missed._"
+      , ""
+      ]
+    summaryLines
+      | null confirmedRel && null uncertainRel && null lowRel =
+          [ if r.totalFindings == 0
+              then "_The finder reported no findings._"
+              else "_No findings survived verification._"
+          , ""
+          ]
+      | otherwise =
+          linkGroup "High-confidence findings:" confirmedRel
+            ++ linkGroup "Low-confidence findings:" uncertainRel
+            ++ linkGroup "Low-relevance findings:" lowRel
+    linkGroup label fvs
+      | null fvs = []
+      | otherwise =
+          label
+            : ""
+            : [ "- [" <> heading <> "](#" <> headingAnchor heading <> ")"
+              | (f, _, _) <- fvs
+              , let heading = f.id <> ": " <> f.title
+              ]
+            ++ [""]
+    findingsSection
+      | null confirmedRel = []
+      | otherwise =
+          "## High-confidence findings" : "" : concatMap (block (const [])) confirmedRel
+    disclosureSection =
+      [ "## Disclosure"
+      , ""
+      , "- GlaHiCo commit: " <> backticked r.commit <> " (the prompts are part of the repository at this commit)"
+      , "- Target: " <> r.targetDesc
+      , "- Base: " <> backticked r.baseSha
+      , "- Head: " <> backticked r.headSha
+      , stageLine "Finder" r.finderStage
+      , stageLine "Verifier" r.verifierStage
+      , "- Truncations: " <> (if null r.truncations then "none" else T.intercalate "; " r.truncations)
+      , "- Findings: " <> findingsLine
+      , ""
+      ]
+    lowSection
+      | null uncertainRel = []
+      | otherwise =
+          [ "## Low-confidence findings"
+          , ""
+          , "The verifier could neither confirm nor refute these; they are included"
+          , "because it judged them relevant."
+          , ""
+          ]
+            ++ concatMap (block (const [])) uncertainRel
+    lowRelSection
+      | null lowRel = []
+      | otherwise =
+          [ "## Low-relevance findings"
+          , ""
+          , "The verifier judged these findings valid or plausible, but of low"
+          , "relevance for this change."
+          , ""
+          ]
+            ++ concatMap (block rationaleLines) lowRel
+    rationaleLines (v :: Verdict) =
+      [ "_Verdict: " <> v.verdict <> "; judged low relevance: "
+          <> T.stripEnd v.relevance_rationale <> "_"
+      , ""
+      ]
+    adhocSection = case r.adhocPrompt of
+      Nothing -> []
+      Just t ->
+        let body = T.stripEnd t
+            fence = fenceFor body
+         in [ "## Appendix: ad-hoc prompt additions"
+            , ""
+            , "The following instructions were appended to the finder prompt for this run:"
+            , ""
+            , fence
+            , body
+            , fence
+            , ""
+            ]
+    disclaimerLines =
+      [ "> **This is tool output**, produced by GlaHiCo, an LLM review pipeline, and"
+      , "> posted verbatim. Findings were filtered mechanically by the pipeline's"
+      , "> verifier stage; no human curated the output. The Claude Code harness"
+      , "> prepends a system prompt of its own that this disclosure cannot reproduce —"
+      , "> the disclosure covers what GlaHiCo sent — and some host state (account"
+      , "> authentication, `~/.claude.json`) also remains active in the harness."
+      ]
+    dirtySection = case r.uncommittedPrompts of
+      [] -> []
+      ps ->
+        [ "## Appendix: uncommitted prompts"
+        , ""
+        , "These prompt files differed from the GlaHiCo commit above; their exact"
+        , "content as used in this run:"
+        , ""
+        ]
+          ++ concatMap
+            ( \(name, content) ->
+                let body = T.stripEnd content
+                    fence = fenceFor body
+                 in ["### " <> T.pack name, "", fence, body, fence, ""]
+            )
+            ps
+
+glahicoCommit :: IO Text
+glahicoCommit = do
+  r <- tryCapture "git" ["-C", scriptDir, "rev-parse", "HEAD"]
+  case r of
+    Left _ -> pure "unknown"
+    Right out -> do
+      let sha = T.strip (lbsText out)
+      dirty <- tryCapture "git" ["-C", scriptDir, "status", "--porcelain"]
+      pure $ case dirty of
+        Right d | T.null (T.strip (lbsText d)) -> sha
+        _ -> sha <> "-dirty"
+
+-- | Prompts whose content at runtime differs from the glahico commit (dirty or
+-- untracked): disclosed by value in the report, like ad-hoc prompts.
+uncommittedPromptFiles :: IO [(String, Text)]
+uncommittedPromptFiles =
+  fmap catMaybes . forM ["finder.md", "verifier.md"] $ \name -> do
+    let rel = "prompts/" <> name
+        path = scriptDir </> rel
+    tracked <- tryCapture "git" ["-C", scriptDir, "ls-files", "--error-unmatch", rel]
+    changed <- case tracked of
+      Left _ -> pure True
+      Right _ -> do
+        d <- tryCapture "git" ["-C", scriptDir, "diff", "HEAD", "--", rel]
+        pure $ case d of
+          Right out -> not (T.null (T.strip (lbsText out)))
+          Left _ -> True
+    if changed
+      then do
+        content <- TIO.readFile path
+        pure (Just (rel, content))
+      else pure Nothing
+
+--------------------------------------------------------------------------------
+-- main
+--------------------------------------------------------------------------------
+
+main :: IO ()
+main = do
+  hSetBuffering stdout LineBuffering
+  cmd <-
+    execParser
+      ( info
+          (cmdP <**> helper)
+          (fullDesc <> progDesc "LLM code review for GHC merge requests; writes review.md and prints its path.")
+      )
+  home <- getHomeDirectory
+  let dataDir = home </> "glahico"
+  case cmd of
+    PublishCmd runDir -> runPublish dataDir runDir
+    ReviewCmd opts -> runReview dataDir opts
+
+runReview :: FilePath -> Opts -> IO ()
+runReview dataDir opts = do
+  adhocText <- traverse (\case AdhocText t -> pure t; AdhocFile p -> TIO.readFile p) opts.adhoc
+  tgt <- either die pure (parseTarget opts.target)
+  resolved <- case tgt of
+    MrTarget project iid -> do
+      putStrLn ("Target: !" <> show iid <> " in " <> T.unpack project)
+      resolveMr dataDir project iid
+    RangeTarget a b -> do
+      putStrLn ("Target: local range " <> T.unpack a <> ".." <> T.unpack b)
+      resolveLocal dataDir a b
+    CommitTarget c -> do
+      putStrLn ("Target: local commit " <> T.unpack c)
+      resolveLocal dataDir (c <> "^") c
+  now <- getCurrentTime
+  let ts = formatTime defaultTimeLocale "%Y%m%dT%H%M%S" now
+      runDir = dataDir </> "runs" </> resolved.slug </> ts
+  createDirectoryIfMissing True (runDir </> "verdicts")
+  putStrLn ("Run directory: " <> runDir)
+  putStrLn "Assembling context pack ..."
+  (ctxDir, truncs) <- buildContext resolved runDir
+  putStrLn ("Context pack: " <> ctxDir)
+  let isMr = isJust resolved.mr
+  finderPrompt <- renderFinderPrompt ctxDir isMr adhocText
+  TIO.writeFile (runDir </> "finder.prompt.txt") finderPrompt
+  putStrLn ("Running finder (" <> opts.finderModel <> ", effort " <> opts.finderEffort <> ") ...")
+  finderRun <-
+    runClaude
+      resolved.worktree
+      ctxDir
+      (runDir </> "finder.envelope.json")
+      opts.finderModel
+      opts.finderEffort
+      finderSchema
+      finderPrompt
+  Findings allFindings <-
+    decodeStructured "finder" (runDir </> "finder.envelope.json") finderRun.structured
+  BL.writeFile (runDir </> "findings.json") (AP.encodePretty (Findings allFindings))
+  putStrLn ("Finder reported " <> show (length allFindings) <> " finding(s).")
+  when (length allFindings > 20) $
+    warn
+      ( "finder reported " <> show (length allFindings)
+          <> " findings; verifying only the first 20."
+      )
+  let toVerify = take 20 allFindings
+      unverifiedN = length allFindings - length toVerify
+  verified <- forM (zip [(1 :: Int) ..] toVerify) $ \(n, f) -> do
+    putStrLn ("Verifying " <> show n <> "/" <> show (length toVerify) <> ": " <> T.unpack f.title <> " ...")
+    vPrompt <- renderVerifierPrompt ctxDir isMr f
+    let vBase = runDir </> "verdicts" </> ("f" <> show n)
+    TIO.writeFile (vBase <> ".prompt.txt") vPrompt
+    run <-
+      runClaude
+        resolved.worktree
+        ctxDir
+        (vBase <> ".envelope.json")
+        opts.verifierModel
+        opts.verifierEffort
+        verifierSchema
+        vPrompt
+    verdict <- decodeStructured ("verifier f" <> show n) (vBase <> ".envelope.json") run.structured
+    BL.writeFile (vBase <> ".json") (AP.encodePretty (embedFinding f verdict))
+    -- At most one snippet in the review; the full list stays in the verdict.
+    snips <- mapM (extractSnippet resolved.worktree) (take 1 verdict.snippets)
+    pure (f, verdict, snips, run)
+  commit <- glahicoCommit
+  dirtyPrompts <- uncommittedPromptFiles
+  (targetDesc, titleSuffix) <- case resolved.mr of
+    Just md ->
+      pure
+        ( "[" <> md.project <> "!" <> tshow md.iid
+            <> "](https://gitlab.haskell.org/" <> md.project <> "/-/merge_requests/" <> tshow md.iid <> ")"
+        , fromMaybe "(no title)" (vText "title" md.meta) <> " (!" <> tshow md.iid <> ")"
+        )
+    Nothing
+      | RangeTarget a b <- tgt ->
+          pure (dup ("local range " <> a <> ".." <> b))
+      | otherwise -> do
+          subject <- gitIn resolved.worktree ["log", "-1", "--format=%s", T.unpack resolved.headSha]
+          pure (dup (subject <> " (" <> T.take 7 resolved.headSha <> ")"))
+  let report =
+        Report
+          { targetDesc
+          , titleSuffix
+          , baseSha = resolved.baseSha
+          , headSha = resolved.headSha
+          , commit
+          , finderStage =
+              Stage
+                opts.finderModel
+                opts.finderEffort
+                (disclosedUsage opts.finderModel finderRun.usage)
+                (maybeToList finderRun.finalContext)
+          , verifierStage =
+              Stage
+                opts.verifierModel
+                opts.verifierEffort
+                (disclosedUsage opts.verifierModel (sumUsage [run.usage | (_, _, _, run) <- verified]))
+                (mapMaybe (\(_, _, _, run) -> run.finalContext) verified)
+          , truncations = truncs
+          , totalFindings = length allFindings
+          , unverified = unverifiedN
+          , verified = [(f, v, s) | (f, v, s, _) <- verified]
+          , adhocPrompt = adhocText
+          , uncommittedPrompts = dirtyPrompts
+          }
+      reviewPath = runDir </> "review.md"
+  TIO.writeFile reviewPath (renderReview report)
+  putStrLn reviewPath
+  -- Only on success: an exception earlier keeps the worktree for debugging.
+  removeWorktree resolved.worktree
