@@ -8,6 +8,11 @@ a full disclosure header. Published reviews are available as
 [snippets on sjakobi/GlaHiCo](https://gitlab.haskell.org/sjakobi/GlaHiCo/-/snippets).
 See `DESIGN.md` for the rationale.
 
+## The name
+
+GlaHiCo wants to be a bit like [sashiko](https://github.com/sashiko-dev/sashiko) —
+the Linux kernel review service this borrows its shape from.
+
 ## Prerequisites
 
 - `cabal` and GHC (`glahico.hs` is a cabal script)
