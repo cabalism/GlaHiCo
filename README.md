@@ -55,6 +55,18 @@ Examples:
 Finder and verifier both run on model `opus` by default, at `medium` effort
 (`low|medium|high|xhigh|max`).
 
+## Cost
+
+Anecdotally, over ~160 archived runs with an opus finder at high effort,
+a review costs $0.13–16 in Claude API terms, typically $3–8 (median
+≈ $4.50). Data for other configurations is thin: the eight opus-medium
+runs ranged $0.24–9.60. On a Claude subscription there is no per-run
+bill, but a run draws the corresponding amount from the subscription's
+usage limits.
+
+Cost scales mainly with diff size, finder effort, and the number of
+findings — each finding gets an independent verifier run.
+
 ## Output
 
 The last line on stdout is the path to the finished review, e.g.

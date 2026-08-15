@@ -2,6 +2,15 @@
 
 Observations from the 2026-07-29 implementation session (branch `glahico-script`):
 
+- **Experiment: opus-medium vs. opus-high for the finder.** No evidence yet
+  that high effort finds more: ~158 archived runs are opus-high vs. 8
+  opus-medium, and the only same-target pair (!16452) is confounded by the
+  MR changing between runs. High-effort no-findings runs cost $5–6; the one
+  opus-medium no-findings MR run cost $0.24. Plan: rerun a sample of past
+  opus-high runs with confirmed findings at opus-medium against the same
+  pinned SHAs (recorded in the disclosure) and measure how many findings
+  medium recovers. ~60+ candidate runs exist; ten targets ≈ $25–40.
+
 - Turn a landed-patch check directly into an issue-tracker ticket, without
   the intermediate review report. Reviewing a landed commit already works
   (`CommitTarget`), and glahico-file-issue drafts tickets with reproducers,
