@@ -25,6 +25,8 @@ the Linux kernel review service this borrows its shape from.
 ./glahico.hs TARGET [--finder-model ALIAS] [--verifier-model ALIAS]
              [--finder-effort LEVEL] [--verifier-effort LEVEL]
              [--prompt TEXT | --prompt-file PATH]
+./glahico.hs resume RUN_DIR [--verifier-model ALIAS] [--verifier-effort LEVEL]
+./glahico.hs publish RUN_DIR
 ```
 
 `TARGET` is one of:
@@ -55,6 +57,10 @@ Examples:
 Finder and verifier both run on model `opus` by default, at `medium` effort
 (`low|medium|high|xhigh|max`).
 
+A model `ALIAS` is passed verbatim to `claude --model`: either a short
+alias like `opus`, `sonnet`, or `haiku`, or a full model ID such as
+`claude-opus-4-6` (note the dashes: `opus-4.6` is rejected).
+
 ## Cost
 
 Anecdotally, over ~160 archived runs with an opus finder at high effort,
@@ -66,6 +72,24 @@ usage limits.
 
 Cost scales mainly with diff size, finder effort, and the number of
 findings — each finding gets an independent verifier run.
+
+## Resuming an interrupted run
+
+```sh
+./glahico.hs resume RUN_DIR [--verifier-model ALIAS] [--verifier-effort LEVEL]
+```
+
+If a run dies after the finder completed (e.g. a bad `--verifier-model`),
+its findings are not lost: `resume` keeps any verdicts already written under
+`RUN_DIR/verdicts/`, verifies the remaining findings, and writes `review.md`.
+The overrides substitute for the verifier settings recorded in the run's
+`run.json` — for the bad-model case, resume with the corrected model. When
+verdicts from different settings end up in one review, the disclosure lists
+all settings actually used. The worktree is recreated if it was cleaned up.
+
+Resume needs `RUN_DIR/run.json` (written at run start) and `findings.json`
+(so the finder must have completed); a run that already has a `review.md` is
+refused as complete.
 
 ## Output
 
