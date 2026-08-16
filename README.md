@@ -55,6 +55,10 @@ Examples:
 Finder and verifier both run on model `opus` by default, at `medium` effort
 (`low|medium|high|xhigh|max`).
 
+A model `ALIAS` is passed verbatim to `claude --model`: either a short
+alias like `opus`, `sonnet`, or `haiku`, or a full model ID such as
+`claude-opus-4-6` (note the dashes: `opus-4.6` is rejected).
+
 ## Cost
 
 Anecdotally, over ~160 archived runs with an opus finder at high effort,

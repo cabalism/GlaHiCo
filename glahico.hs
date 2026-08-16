@@ -92,9 +92,9 @@ optsP =
     <$> strArgument
       (metavar "TARGET" <> help "MR number (14892 or !14892), gitlab.haskell.org MR URL, local commit range (BASE..HEAD), or single commit")
     <*> strOption
-      (long "finder-model" <> metavar "ALIAS" <> value "opus" <> showDefault <> help "Model for the finder stage")
+      (long "finder-model" <> metavar "ALIAS" <> value "opus" <> showDefault <> help "Model for the finder stage (passed to `claude --model`: alias like opus/sonnet, or full ID like claude-opus-4-6)")
     <*> strOption
-      (long "verifier-model" <> metavar "ALIAS" <> value "opus" <> showDefault <> help "Model for the verifier stage")
+      (long "verifier-model" <> metavar "ALIAS" <> value "opus" <> showDefault <> help "Model for the verifier stage (same syntax as --finder-model)")
     <*> effortOption "finder-effort" "Effort level for the finder stage"
     <*> effortOption "verifier-effort" "Effort level for the verifier stage"
     <*> optional
