@@ -59,7 +59,7 @@ import System.Process.Typed (byteStringInput, nullStream, proc, readProcess, run
 
 data Adhoc = AdhocText Text | AdhocFile FilePath
 
-data Cmd = ReviewCmd Opts | PublishCmd FilePath
+data Cmd = ReviewCmd Opts | PublishCmd FilePath | ResumeCmd ResumeOpts
 
 data Opts = Opts
   { target :: String
@@ -70,8 +70,14 @@ data Opts = Opts
   , adhoc :: Maybe Adhoc
   }
 
+data ResumeOpts = ResumeOpts
+  { runDir :: FilePath
+  , verifierModel :: Maybe String
+  , verifierEffort :: Maybe String
+  }
+
 -- | @glahico publish RUN_DIR@ is a subcommand; a bare TARGET still reviews.
--- No real target collides with the literal word "publish" (targets are
+-- No real target collides with the literal subcommand words (targets are
 -- digits, !N, URLs, or ..-ranges), so the fallback is unambiguous.
 cmdP :: Parser Cmd
 cmdP =
@@ -82,9 +88,27 @@ cmdP =
             (PublishCmd <$> strArgument (metavar "RUN_DIR|REVIEW_MD" <> help "Run directory containing review.md, or the review.md file itself"))
             (progDesc "Publish a run's review.md as a GitLab snippet")
         )
-        <> metavar "publish"
+        <> command
+          "resume"
+          ( info
+              (ResumeCmd <$> resumeOptsP)
+              (progDesc "Resume an interrupted run: verify remaining findings and write review.md")
+          )
+        <> metavar "publish|resume"
     )
     <|> (ReviewCmd <$> optsP)
+
+resumeOptsP :: Parser ResumeOpts
+resumeOptsP =
+  ResumeOpts
+    <$> strArgument (metavar "RUN_DIR" <> help "Run directory containing run.json and findings.json")
+    <*> optional
+      (strOption (long "verifier-model" <> metavar "ALIAS" <> help "Override the verifier model recorded in the run"))
+    <*> optional
+      ( option
+          (eitherReader effortCheck)
+          (long "verifier-effort" <> metavar "LEVEL" <> help "Override the verifier effort recorded in the run (low|medium|high|xhigh|max)")
+      )
 
 optsP :: Parser Opts
 optsP =
@@ -107,12 +131,13 @@ optsP =
 effortOption :: String -> String -> Parser String
 effortOption name h =
   option
-    (eitherReader check)
+    (eitherReader effortCheck)
     (long name <> metavar "LEVEL" <> value "medium" <> showDefault <> help (h <> " (low|medium|high|xhigh|max)"))
-  where
-    check s
-      | s `elem` ["low", "medium", "high", "xhigh", "max"] = Right s
-      | otherwise = Left ("invalid effort level: " <> s)
+
+effortCheck :: String -> Either String String
+effortCheck s
+  | s `elem` ["low", "medium", "high", "xhigh", "max"] = Right s
+  | otherwise = Left ("invalid effort level: " <> s)
 
 --------------------------------------------------------------------------------
 -- Target parsing
@@ -364,6 +389,7 @@ data MrData = MrData {project :: Text, iid :: Int, meta :: Value}
 
 data Resolved = Resolved
   { slug :: String
+  , srcRepo :: FilePath -- repo the worktree was created from (for recreation on resume)
   , worktree :: FilePath
   , baseSha :: Text
   , headSha :: Text
@@ -524,7 +550,7 @@ resolveMr dataDir project iid = do
   baseSha <- gitIn mirror ["merge-base", "refs/glahico/" <> slug, "refs/glahico/" <> slug <> "-base"]
   let wt = dataDir </> "wt" </> slug
   prepareWorktree (dataDir </> "submodules") mirror wt headSha
-  pure Resolved {slug, worktree = wt, baseSha, headSha, mr = Just (MrData project iid meta)}
+  pure Resolved {slug, srcRepo = mirror, worktree = wt, baseSha, headSha, mr = Just (MrData project iid meta)}
 
 -- | rev-parse a spec; if unknown locally, try fetching it from the repo's
 -- remotes (direct-SHA fetch for full hashes, plain fetch otherwise) and retry.
@@ -565,7 +591,7 @@ resolveLocal dataDir baseSpec headSpec = do
           <> T.unpack (T.take 7 baseSha) <> ".." <> T.unpack (T.take 7 headSha)
       wt = dataDir </> "wt" </> slug
   prepareWorktree (dataDir </> "submodules") repo wt headSha
-  pure Resolved {slug, worktree = wt, baseSha, headSha, mr = Nothing}
+  pure Resolved {slug, srcRepo = repo, worktree = wt, baseSha, headSha, mr = Nothing}
 
 --------------------------------------------------------------------------------
 -- Context pack
@@ -789,9 +815,16 @@ instance FromJSON Verdict
 
 instance ToJSON Verdict
 
-embedFinding :: Finding -> Verdict -> Value
-embedFinding f v = case toJSON v of
-  Object o -> Object (KM.insert "finding" (toJSON f) o)
+-- | The verdict plus the finding it judges and the verifier settings used
+-- (read back by @resume@ for disclosure attribution).
+embedFinding :: String -> String -> Finding -> Verdict -> Value
+embedFinding model effort f v = case toJSON v of
+  Object o ->
+    Object
+      ( KM.insert "finding" (toJSON f) $
+          KM.insert "model" (toJSON model) $
+            KM.insert "effort" (toJSON effort) o
+      )
   x -> x
 
 decodeStructured :: FromJSON a => String -> FilePath -> Value -> IO a
@@ -900,31 +933,36 @@ runClaude wt ctxDir envelopePath model effort schema prompt = do
   structured <- case vKey "structured_output" v of
     Just s | s /= Null -> pure s
     _ -> failWith "claude result envelope has no structured_output"
-  let i k mv = fromMaybe 0 (vInt k mv)
-      usage = case vKey "modelUsage" v of
-        Just (Object o) ->
-          [ ( Key.toText k
-            , ModelTokens
-                { input = i "inputTokens" mv
-                , cacheCreation = i "cacheCreationInputTokens" mv
-                , cacheRead = i "cacheReadInputTokens" mv
-                , output = i "outputTokens" mv
-                }
-            )
-          | (k, mv) <- KM.toList o
-          ]
-        _ -> []
-      -- The last request's input + cache tokens approximate the final context
-      -- size; fall back to the call totals when iterations are absent.
-      finalContext = do
-        u <- vKey "usage" v
-        let src = case vArray "iterations" u of
-              [] -> u
-              its -> last its
-        case mapMaybe (`vInt` src) ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"] of
-          [] -> Nothing
-          xs -> Just (sum xs)
-  pure ClaudeRun {structured, usage, finalContext}
+  pure ClaudeRun {structured, usage = envelopeUsage v, finalContext = envelopeFinalContext v}
+
+envelopeUsage :: Value -> [(Text, ModelTokens)]
+envelopeUsage v = case vKey "modelUsage" v of
+  Just (Object o) ->
+    [ ( Key.toText k
+      , ModelTokens
+          { input = i "inputTokens" mv
+          , cacheCreation = i "cacheCreationInputTokens" mv
+          , cacheRead = i "cacheReadInputTokens" mv
+          , output = i "outputTokens" mv
+          }
+      )
+    | (k, mv) <- KM.toList o
+    ]
+  _ -> []
+  where
+    i k mv = fromMaybe 0 (vInt k mv)
+
+-- | The last request's input + cache tokens approximate the final context
+-- size; fall back to the call totals when iterations are absent.
+envelopeFinalContext :: Value -> Maybe Int
+envelopeFinalContext v = do
+  u <- vKey "usage" v
+  let src = case vArray "iterations" u of
+        [] -> u
+        its -> last its
+  case mapMaybe (`vInt` src) ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"] of
+    [] -> Nothing
+    xs -> Just (sum xs)
 
 --------------------------------------------------------------------------------
 -- Report
@@ -1243,6 +1281,192 @@ uncommittedPromptFiles =
       else pure Nothing
 
 --------------------------------------------------------------------------------
+-- Run manifest & resume
+--------------------------------------------------------------------------------
+
+-- | run.json: everything @resume@ needs that lives only in memory during a
+-- review run. Written before the finder starts.
+data Manifest = Manifest
+  { target :: String
+  , slug :: String
+  , baseSha :: Text
+  , headSha :: Text
+  , isMr :: Bool
+  , targetDesc :: Text
+  , titleSuffix :: Text
+  , srcRepo :: FilePath
+  , worktree :: FilePath
+  , finderModel :: String
+  , verifierModel :: String
+  , finderEffort :: String
+  , verifierEffort :: String
+  , adhocPrompt :: Maybe Text
+  , truncations :: [Text]
+  }
+  deriving (Generic, Show)
+
+instance FromJSON Manifest
+
+instance ToJSON Manifest
+
+readJson :: FromJSON a => FilePath -> IO a
+readJson p = do
+  raw <- BL.readFile p
+  either (\e -> die (p <> ": " <> e)) pure (eitherDecode raw)
+
+-- | Usage and final-context size from a preserved claude envelope; degrades
+-- to no data (with a warning) rather than failing the resume.
+readEnvelope :: FilePath -> IO ([(Text, ModelTokens)], Maybe Int)
+readEnvelope p = do
+  ok <- doesFileExist p
+  if not ok
+    then ([], Nothing) <$ warn (p <> " missing; its usage is omitted from the disclosure")
+    else
+      eitherDecode <$> BL.readFile p >>= \case
+        Left _ -> ([], Nothing) <$ warn ("cannot parse " <> p <> "; its usage is omitted from the disclosure")
+        Right v -> pure (envelopeUsage v, envelopeFinalContext v)
+
+-- | One verified finding with the data the disclosure needs about the call.
+data VerifiedFinding = VerifiedFinding
+  { finding :: Finding
+  , verdict :: Verdict
+  , snippets :: [RenderedSnippet]
+  , model :: String
+  , effort :: String
+  , usage :: [(Text, ModelTokens)]
+  , finalContext :: Maybe Int
+  }
+
+verifyOne :: FilePath -> FilePath -> FilePath -> Bool -> String -> String -> Int -> Finding -> IO VerifiedFinding
+verifyOne wt ctxDir runDir isMr model effort n f = do
+  vPrompt <- renderVerifierPrompt ctxDir isMr f
+  let vBase = runDir </> "verdicts" </> ("f" <> show n)
+  TIO.writeFile (vBase <> ".prompt.txt") vPrompt
+  run <- runClaude wt ctxDir (vBase <> ".envelope.json") model effort verifierSchema vPrompt
+  verdict <- decodeStructured ("verifier f" <> show n) (vBase <> ".envelope.json") run.structured
+  BL.writeFile (vBase <> ".json") (AP.encodePretty (embedFinding model effort f verdict))
+  -- At most one snippet in the review; the full list stays in the verdict.
+  snips <- mapM (extractSnippet wt) (take 1 verdict.snippets)
+  pure
+    VerifiedFinding
+      { finding = f
+      , verdict
+      , snippets = snips
+      , model
+      , effort
+      , usage = run.usage
+      , finalContext = run.finalContext
+      }
+
+-- | Load a completed verdict from a prior run, or Nothing if it isn't there.
+-- Settings fall back to the manifest for fN.json files written before they
+-- were recorded per verdict.
+loadVerdict :: FilePath -> Manifest -> FilePath -> Int -> Finding -> IO (Maybe VerifiedFinding)
+loadVerdict runDir man wt n f = do
+  let vPath = runDir </> "verdicts" </> ("f" <> show n) <> ".json"
+  ok <- doesFileExist vPath
+  if not ok
+    then pure Nothing
+    else do
+      v <- readJson vPath
+      verdict <- case A.fromJSON v of
+        A.Success x -> pure x
+        A.Error e -> die (vPath <> " does not parse as a verdict: " <> e)
+      case vKey "finding" v >>= vText "id" of
+        Just fid
+          | fid /= f.id ->
+              die
+                ( vPath <> " records finding " <> T.unpack fid
+                    <> " but findings.json has " <> T.unpack f.id <> " at this position"
+                )
+        _ -> pure ()
+      let model = maybe man.verifierModel T.unpack (vText "model" v)
+          effort = maybe man.verifierEffort T.unpack (vText "effort" v)
+      (usage, finalContext) <- readEnvelope (runDir </> "verdicts" </> ("f" <> show n) <> ".envelope.json")
+      snips <- mapM (extractSnippet wt) (take 1 verdict.snippets)
+      pure (Just VerifiedFinding {finding = f, verdict, snippets = snips, model, effort, usage, finalContext})
+
+-- | Disclosure for the verifier stage. A resumed run can mix settings, so
+-- the requested model/effort are those actually recorded per verdict (comma-
+-- joined when mixed); the defaults cover the no-findings case.
+verifierStageOf :: String -> String -> [VerifiedFinding] -> Stage
+verifierStageOf defModel defEffort vfs =
+  Stage
+    { alias
+    , effortLevel = joinUniq defEffort (map (.effort) vfs)
+    , ranUsage = disclosedUsage alias (sumUsage (map (.usage) vfs))
+    , finalContexts = mapMaybe (.finalContext) vfs
+    }
+  where
+    alias = joinUniq defModel (map (.model) vfs)
+    joinUniq d xs = if null xs then d else intercalate ", " (nub xs)
+
+runResume :: FilePath -> ResumeOpts -> IO ()
+runResume dataDir ropts = do
+  let runDir = ropts.runDir
+      manifestPath = runDir </> "run.json"
+      findingsPath = runDir </> "findings.json"
+      reviewPath = runDir </> "review.md"
+  hasReview <- doesFileExist reviewPath
+  when hasReview $
+    die ("run already complete: " <> reviewPath <> " exists")
+  hasManifest <- doesFileExist manifestPath
+  unless hasManifest $
+    die (manifestPath <> " not found; this run predates resume support (no manifest was written)")
+  man <- readJson manifestPath
+  hasFindings <- doesFileExist findingsPath
+  unless hasFindings $
+    die (findingsPath <> " not found: the finder stage did not complete; start a fresh review instead")
+  Findings allFindings <- readJson findingsPath
+  let vModel = fromMaybe man.verifierModel ropts.verifierModel
+      vEffort = fromMaybe man.verifierEffort ropts.verifierEffort
+      ctxDir = runDir </> "context"
+      wt = man.worktree
+  putStrLn ("Resuming run " <> runDir)
+  prepareWorktree (dataDir </> "submodules") man.srcRepo wt man.headSha
+  when (length allFindings > 20) $
+    warn
+      ( "finder reported " <> show (length allFindings)
+          <> " findings; verifying only the first 20."
+      )
+  let toVerify = take 20 allFindings
+      unverifiedN = length allFindings - length toVerify
+  verified <- forM (zip [(1 :: Int) ..] toVerify) $ \(n, f) -> do
+    cached <- loadVerdict runDir man wt n f
+    case cached of
+      Just vf -> vf <$ putStrLn ("Keeping existing verdict f" <> show n <> ": " <> T.unpack f.title)
+      Nothing -> do
+        putStrLn ("Verifying " <> show n <> "/" <> show (length toVerify) <> ": " <> T.unpack f.title <> " ...")
+        verifyOne wt ctxDir runDir man.isMr vModel vEffort n f
+  (finderUsage, finderCtx) <- readEnvelope (runDir </> "finder.envelope.json")
+  commit <- glahicoCommit
+  dirtyPrompts <- uncommittedPromptFiles
+  let report =
+        Report
+          { targetDesc = man.targetDesc
+          , titleSuffix = man.titleSuffix
+          , baseSha = man.baseSha
+          , headSha = man.headSha
+          , commit
+          , finderStage =
+              Stage
+                man.finderModel
+                man.finderEffort
+                (disclosedUsage man.finderModel finderUsage)
+                (maybeToList finderCtx)
+          , verifierStage = verifierStageOf vModel vEffort verified
+          , truncations = man.truncations
+          , totalFindings = length allFindings
+          , unverified = unverifiedN
+          , verified = [(vf.finding, vf.verdict, vf.snippets) | vf <- verified]
+          , adhocPrompt = man.adhocPrompt
+          , uncommittedPrompts = dirtyPrompts
+          }
+  TIO.writeFile reviewPath (renderReview report)
+  putStrLn reviewPath
+  removeWorktree wt
+
+--------------------------------------------------------------------------------
 -- main
 --------------------------------------------------------------------------------
 
@@ -1260,6 +1484,7 @@ main = do
   case cmd of
     PublishCmd runDir -> runPublish dataDir runDir
     ReviewCmd opts -> runReview dataDir opts
+    ResumeCmd ropts -> runResume dataDir ropts
 
 runReview :: FilePath -> Opts -> IO ()
 runReview dataDir opts = do
@@ -1284,6 +1509,38 @@ runReview dataDir opts = do
   (ctxDir, truncs) <- buildContext resolved runDir
   putStrLn ("Context pack: " <> ctxDir)
   let isMr = isJust resolved.mr
+  (targetDesc, titleSuffix) <- case resolved.mr of
+    Just md ->
+      pure
+        ( "[" <> md.project <> "!" <> tshow md.iid
+            <> "](https://gitlab.haskell.org/" <> md.project <> "/-/merge_requests/" <> tshow md.iid <> ")"
+        , fromMaybe "(no title)" (vText "title" md.meta) <> " (!" <> tshow md.iid <> ")"
+        )
+    Nothing
+      | RangeTarget a b <- tgt ->
+          pure (dup ("local range " <> a <> ".." <> b))
+      | otherwise -> do
+          subject <- gitIn resolved.worktree ["log", "-1", "--format=%s", T.unpack resolved.headSha]
+          pure (dup (subject <> " (" <> T.take 7 resolved.headSha <> ")"))
+  BL.writeFile (runDir </> "run.json") $
+    AP.encodePretty
+      Manifest
+        { target = opts.target
+        , slug = resolved.slug
+        , baseSha = resolved.baseSha
+        , headSha = resolved.headSha
+        , isMr
+        , targetDesc
+        , titleSuffix
+        , srcRepo = resolved.srcRepo
+        , worktree = resolved.worktree
+        , finderModel = opts.finderModel
+        , verifierModel = opts.verifierModel
+        , finderEffort = opts.finderEffort
+        , verifierEffort = opts.verifierEffort
+        , adhocPrompt = adhocText
+        , truncations = truncs
+        }
   finderPrompt <- renderFinderPrompt ctxDir isMr adhocText
   TIO.writeFile (runDir </> "finder.prompt.txt") finderPrompt
   putStrLn ("Running finder (" <> opts.finderModel <> ", effort " <> opts.finderEffort <> ") ...")
@@ -1309,38 +1566,9 @@ runReview dataDir opts = do
       unverifiedN = length allFindings - length toVerify
   verified <- forM (zip [(1 :: Int) ..] toVerify) $ \(n, f) -> do
     putStrLn ("Verifying " <> show n <> "/" <> show (length toVerify) <> ": " <> T.unpack f.title <> " ...")
-    vPrompt <- renderVerifierPrompt ctxDir isMr f
-    let vBase = runDir </> "verdicts" </> ("f" <> show n)
-    TIO.writeFile (vBase <> ".prompt.txt") vPrompt
-    run <-
-      runClaude
-        resolved.worktree
-        ctxDir
-        (vBase <> ".envelope.json")
-        opts.verifierModel
-        opts.verifierEffort
-        verifierSchema
-        vPrompt
-    verdict <- decodeStructured ("verifier f" <> show n) (vBase <> ".envelope.json") run.structured
-    BL.writeFile (vBase <> ".json") (AP.encodePretty (embedFinding f verdict))
-    -- At most one snippet in the review; the full list stays in the verdict.
-    snips <- mapM (extractSnippet resolved.worktree) (take 1 verdict.snippets)
-    pure (f, verdict, snips, run)
+    verifyOne resolved.worktree ctxDir runDir isMr opts.verifierModel opts.verifierEffort n f
   commit <- glahicoCommit
   dirtyPrompts <- uncommittedPromptFiles
-  (targetDesc, titleSuffix) <- case resolved.mr of
-    Just md ->
-      pure
-        ( "[" <> md.project <> "!" <> tshow md.iid
-            <> "](https://gitlab.haskell.org/" <> md.project <> "/-/merge_requests/" <> tshow md.iid <> ")"
-        , fromMaybe "(no title)" (vText "title" md.meta) <> " (!" <> tshow md.iid <> ")"
-        )
-    Nothing
-      | RangeTarget a b <- tgt ->
-          pure (dup ("local range " <> a <> ".." <> b))
-      | otherwise -> do
-          subject <- gitIn resolved.worktree ["log", "-1", "--format=%s", T.unpack resolved.headSha]
-          pure (dup (subject <> " (" <> T.take 7 resolved.headSha <> ")"))
   let report =
         Report
           { targetDesc
@@ -1354,16 +1582,11 @@ runReview dataDir opts = do
                 opts.finderEffort
                 (disclosedUsage opts.finderModel finderRun.usage)
                 (maybeToList finderRun.finalContext)
-          , verifierStage =
-              Stage
-                opts.verifierModel
-                opts.verifierEffort
-                (disclosedUsage opts.verifierModel (sumUsage [run.usage | (_, _, _, run) <- verified]))
-                (mapMaybe (\(_, _, _, run) -> run.finalContext) verified)
+          , verifierStage = verifierStageOf opts.verifierModel opts.verifierEffort verified
           , truncations = truncs
           , totalFindings = length allFindings
           , unverified = unverifiedN
-          , verified = [(f, v, s) | (f, v, s, _) <- verified]
+          , verified = [(vf.finding, vf.verdict, vf.snippets) | vf <- verified]
           , adhocPrompt = adhocText
           , uncommittedPrompts = dirtyPrompts
           }
