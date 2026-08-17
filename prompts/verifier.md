@@ -28,7 +28,7 @@ Work in this order, and gather concrete evidence at each step:
    enough to act on before merging. Less relevant: pre-existing behaviour,
    hypotheticals with no reachable trigger.
 
-4. WRITE UP. If the finding is confirmed, or uncertain and relevant, write the
+4. WRITE UP. Unless the finding is refuted, write the
    text that will be reported to the MR author and maintainers, as a
    self-contained writeup: what is wrong, why, and the concrete trigger.
    Clarity and readability is most important. Conciseness is also good.
@@ -41,7 +41,7 @@ Work in this order, and gather concrete evidence at each step:
    focused (roughly 5–15 lines), with key_line naming the single line at the
    core of the issue within that range. This range will be included as a
    snippet in the final review document.
-   For a refuted or irrelevant finding, leave the writeup empty and the snippets
+   For a refuted finding, leave the writeup empty and the snippets
    list empty.
 
 Verdict rules: "confirmed" only if step 2 produced a concrete trigger that
