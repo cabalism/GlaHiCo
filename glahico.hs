@@ -915,12 +915,14 @@ runClaude wt ctxDir envelopePath model effort schema prompt = do
           ]
         _ -> []
       -- The last request's input + cache tokens approximate the final context
-      -- size; fall back to the call totals when iterations are absent.
+      -- size. When iterations are absent (e.g. under
+      -- CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1) there is no per-request
+      -- data — the top-level usage is cumulative — so report no estimate.
       finalContext = do
         u <- vKey "usage" v
-        let src = case vArray "iterations" u of
-              [] -> u
-              its -> last its
+        src <- case vArray "iterations" u of
+          [] -> Nothing
+          its -> Just (last its)
         case mapMaybe (`vInt` src) ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"] of
           [] -> Nothing
           xs -> Just (sum xs)
