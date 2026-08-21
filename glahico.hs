@@ -879,9 +879,15 @@ runClaude wt ctxDir envelopePath model effort schema prompt = do
         , "--strict-mcp-config"
         , "--no-session-persistence"
         ]
+      -- CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC makes claude omit
+      -- usage.iterations, losing the final-context estimate.
       env' =
         ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1")
-          : filter ((/= "CLAUDE_CODE_DISABLE_AUTO_MEMORY") . fst) hostEnv
+          : filter
+              ( (`notElem` ["CLAUDE_CODE_DISABLE_AUTO_MEMORY", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"])
+                  . fst
+              )
+              hostEnv
       replay = "replay: (cd " <> shellQuote wt <> " && " <> unwords (map shellQuote ("claude" : argv)) <> ")"
       failWith msg = die (msg <> "\nraw output preserved at: " <> envelopePath <> "\n" <> replay)
   (ec, out, errOut) <-
