@@ -977,13 +977,30 @@ extractSnippet :: FilePath -> Snippet -> IO RenderedSnippet
 extractSnippet worktree s = do
   let label = s.file <> ":" <> tshow s.first_line <> "-" <> tshow s.last_line
       path = worktree </> T.unpack s.file
-      -- .T files are the Python testsuite driver files.
-      (lang, commentPrefix) = case takeExtension (T.unpack s.file) of
-        e
-          | e `elem` [".hs", ".lhs", ".hs-boot"] -> ("haskell", Just "-- ")
-          | e `elem` [".c", ".h", ".cmm"] -> ("c", Just "// ")
-          | e `elem` [".py", ".T"] -> ("python", Just "# ")
-          | otherwise -> ("", Nothing)
+      -- .T files are the Python testsuite driver files. Only file types
+      -- with a trailing-comment syntax get a prefix; RST and Markdown
+      -- have none, and .stdout/.stderr are opaque.
+      ext = takeExtension (T.unpack s.file)
+      isMakefile = takeFileName (T.unpack s.file) == "Makefile"
+      lang
+        | ext `elem` [".hs", ".lhs", ".hs-boot", ".hsc", ".hsig", ".bkp", ".script"] = "haskell"
+        | ext == ".cabal" = "cabal"
+        | ext `elem` [".c", ".h", ".cmm"] = "c"
+        | ext == ".js" = "javascript"
+        | ext `elem` [".py", ".T"] = "python"
+        | ext == ".sh" = "bash"
+        | ext `elem` [".yaml", ".yml"] = "yaml"
+        | ext == ".tex" = "latex"
+        | ext == ".rst" = "rst"
+        | ext == ".md" = "markdown"
+        | isMakefile = "makefile"
+        | otherwise = ""
+      commentPrefix
+        | lang `elem` ["haskell", "cabal"] = Just "-- "
+        | lang `elem` ["c", "javascript"] = Just "// "
+        | lang `elem` ["python", "bash", "yaml", "makefile"] = Just "# "
+        | lang == "latex" = Just "% "
+        | otherwise = Nothing
       commentedLabel = (<> label) <$> commentPrefix
   exists <- doesFileExist path
   body <-
@@ -995,14 +1012,13 @@ extractSnippet worktree s = do
             wanted = s.last_line - lo + 1
             picked = take (min snippetCap wanted) (drop (lo - 1) ls)
             truncated = wanted > snippetCap && length picked == snippetCap
-            -- Arrow-comment marker on the key line, when we know the
-            -- language's comment syntax.
-            marked = case commentPrefix of
-              Nothing -> picked
-              Just p ->
-                [ if n == s.key_line then l <> "  " <> T.strip p <> " <========== HERE" else l
-                | (n, l) <- zip [lo ..] picked
-                ]
+            -- Arrow marker on the key line, as a comment when we know the
+            -- language's syntax and bare otherwise.
+            marker = maybe "" (\p -> T.strip p <> " ") commentPrefix <> "<========== HERE"
+            marked =
+              [ if n == s.key_line then l <> "  " <> marker else l
+              | (n, l) <- zip [lo ..] picked
+              ]
         pure $
           if null picked
             then Nothing
