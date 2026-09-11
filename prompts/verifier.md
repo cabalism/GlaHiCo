@@ -31,6 +31,7 @@ Work in this order, and gather concrete evidence at each step:
 4. WRITE UP. Unless the finding is refuted, write the
    text that will be reported to the MR author and maintainers, as a
    self-contained writeup: what is wrong, why, and the concrete trigger.
+   The writeup is rendered as Markdown; put code in fenced code blocks.
    Clarity and readability is most important. Conciseness is also good.
    Do not restate the steps above, and do not talk about
    the finder or the verification process. For an uncertain finding, say
