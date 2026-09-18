@@ -469,24 +469,28 @@ initSubmodules stores wt = do
         createDirectoryIfMissing True (takeDirectory store)
         inherit "git" ["clone", "--mirror", T.unpack url, store]
       pure ["-c", "submodule." <> n <> ".url=" <> store]
-    let update =
+    -- Retries use --force: a failed parallel update can leave submodules
+    -- cloned but not checked out, with HEAD already at the pinned commit,
+    -- which a plain update skips as up to date.
+    let update extra =
           tryCapture "git" $
             ["-C", wt, "-c", "protocol.file.allow=always"]
               <> cfgs
               <> ["submodule", "update", "--init", "--jobs", "4"]
-    r <- update >>= \case
+              <> extra
+    r <- update [] >>= \case
       Right ok -> pure (Right ok)
       Left _ -> do
         putStrLn "Refreshing submodule stores ..."
         forM_ names $ \n ->
           void (tryCapture "git" ["-C", stores </> n, "fetch", "--prune", "--quiet"])
-        update
+        update ["--force"]
     case r of
       Right _ -> void (gitIn wt ["submodule", "sync", "--quiet"])
       Left _ -> do
         warn "local submodule stores were insufficient; falling back to canonical remotes"
         void (gitIn wt ["submodule", "sync", "--quiet"])
-        gitLoud wt ["submodule", "update", "--init", "--jobs", "4"]
+        gitLoud wt ["submodule", "update", "--init", "--jobs", "4", "--force"]
 
 resolveMr :: FilePath -> Text -> Int -> IO Resolved
 resolveMr dataDir project iid = do
