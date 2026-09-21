@@ -37,7 +37,25 @@ Hard policies:
   giving up. If none could be built or run, draft anyway, say so in the
   ticket and give the code-level trigger scenario instead.
 - **Title** ≤ 90 characters, stating the observed behaviour in neutral
-  terms — not the diagnosis, not the impact.
+  terms — not the diagnosis, not the impact. Its specifics (instruction,
+  function, message) must match the reproducer's path.
+
+Writing rules — the reader is a maintainer who wants the facts and
+nothing else:
+
+- Every caveat once. "Not run on X", "by reading the source" and the
+  like go in Triage info, not repeated per section.
+- No justification aimed at the reviewer ("the sinker only refuses
+  ..."). State the fact and where it comes from (dump, file, commit);
+  leave out why you believe it.
+- No lists a reader would feel obliged to check (package names, branch
+  head SHAs). Counts and the introducing commit are enough.
+- Nothing that is true by default ("the backport matches master") or
+  already said in Analysis. What the MR discussion did or didn't say
+  belongs in the metadata block unless it changes the picture.
+- Predicted vs observed: if the reproducer wasn't run, say "Predicted,
+  not observed:" once before the expected failure. The file's header
+  comment states only the correct behaviour.
 
 Where things go:
 
@@ -64,16 +82,17 @@ Ticket structure, in this order:
    ```
 
 3. Summary — only if the title doesn't already say it.
-4. Reproducer — one or multiple source files, how to run it, observed output. The header
-   comment says what the file does and what to expect.
+4. Reproducer — one or multiple source files, how to run it, observed
+   output. The header comment says what the file does and what the
+   correct behaviour is.
 5. Analysis — optional.
-6. Triage info — which branches and compilers it reproduces on; what
-   introduced it (a backport slip, or the original commit/MR); and the
-   evidence for user exposure, stated as facts, not a verdict: how
-   ordinary code reaches the trigger, whether the boot libraries or the
-   testsuite in `~/ghc/work` contain that pattern, what conditions it
-   needs (platform, flags), how it fails (loud or silent), and any earlier
-   reports of the same symptom.
+6. Triage info — three or four bullets, facts only: what introduced it
+   (commit, MR, and the issue that MR fixed, or a backport slip) and
+   which active branches carry it; what was run where and what wasn't;
+   exposure evidence, not a verdict — the trigger shape and what
+   conditions it needs (platform, flags), whether the boot libraries,
+   the testsuite in `~/ghc/work` or Hackage contain that pattern, how it
+   fails (loud or silent), and any earlier report of the same symptom.
 7. Provenance, facts only:
 
    ```
