@@ -27,15 +27,11 @@ Hard policies:
 
 - **Draft only, never file.** Simon files manually. Don't post anything.
 - Draft goes to `RUN_DIR/tickets/<fid>.md`, topped by a metadata block for
-  Simon (suggested labels, milestone, related issues). Reproducer files
-  plus a `run.sh` go to `RUN_DIR/tickets/<fid>/`, and their sources are
-  also embedded in the ticket body as collapsible `<details>` blocks
-  (one per file, filename as `<summary>`) — the ticket must be
-  self-contained, not reference attachments.
-- Title: short and readable — aim for ≤ 90 characters.
-  Name the symptom or the buggy component, not the full diagnosis;
-  details (function names, flags, exact conditions) belong in the body.
-  Readability wins over completeness.
+  Simon (suggested labels, related issues). Reproducer files go to
+  `RUN_DIR/tickets/<fid>/` and are also included verbatim in the ticket
+  body — the ticket must be self-contained, not reference attachments.
+- Title: ≤ 90 characters, naming the symptom or component, not the
+  diagnosis.
 - Always try to actually run the reproducer. If constructing or running
   one isn't possible, draft anyway and say so plainly in the ticket,
   giving the code-level trigger scenario instead.
@@ -61,11 +57,6 @@ Hard policies:
     The draft of this ticket was also written by an LLM agent.
     ```
 
-    If the reproducer was actually run and the failure confirmed,
-    append: "The reproducer above was built and run, and the failure
-    confirmed, before filing." Otherwise omit — never claim more
-    scrutiny than happened.
-
 Environment facts:
 
 - Finding evidence: `RUN_DIR/verdicts/<fid>.json` (authoritative), plus
@@ -78,7 +69,7 @@ Environment facts:
   it for reproducers, noting which commit it was built from.
 - Findings come from backport reviews, so check `origin/ghc-9.14` as well
   as `origin/master` — a bug can be branch-only (bad backport) or fixed on
-  master but not backported; that decides milestone and framing.
+  master but not backported.
 - If a different build is genuinely needed: only with ≥ 10 GB free on
   `~/ghc`, create a worktree with `~/ghc/wt <name> <branch> <start-point>`
   (lands in `~/ghc/work-trees/`) and build/test there with `~/ghc/tt`.
