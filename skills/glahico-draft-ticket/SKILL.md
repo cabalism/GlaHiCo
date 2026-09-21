@@ -66,10 +66,14 @@ Ticket structure, in this order:
 3. Summary — only if the title doesn't already say it.
 4. Reproducer — one or multiple source files, how to run it, observed output. The header
    comment says what the file does and what to expect.
-5. Analysis — optional, signposted so it can be skipped.
-6. Facts — which branches and compilers it reproduces on, what introduced
-   it (a backport slip, or the original commit/MR), and known user reports
-   if any.
+5. Analysis — optional.
+6. Triage info — which branches and compilers it reproduces on; what
+   introduced it (a backport slip, or the original commit/MR); and the
+   evidence for user exposure, stated as facts, not a verdict: how
+   ordinary code reaches the trigger, whether the boot libraries or the
+   testsuite in `~/ghc/work` contain that pattern, what conditions it
+   needs (platform, flags), how it fails (loud or silent), and any earlier
+   reports of the same symptom.
 7. Provenance, facts only:
 
    ```
@@ -79,6 +83,11 @@ Ticket structure, in this order:
    <snippet.json web_url> (finding <fid>).
    The draft of this ticket was also written by an LLM agent.
    ```
+
+   Commit ranges: write `<parent-sha>...<last-sha>` with three dots and
+   the resolved SHA of the parent (`git rev-parse X^`). GitLab links that
+   to a working compare page. Two dots or a literal `^` produce a broken
+   link.
 
 Inputs to consult:
 
@@ -91,7 +100,10 @@ Inputs to consult:
   A bug can be branch-only (bad backport) or fixed on master but not
   backported. Check the reproducer with the compilers available — ghcup
   installs (`ghcup list -c installed`, including prereleases) and
-  `~/ghc/work` — and say in the facts which branches you couldn't check.
+  `~/ghc/work` — and say in the triage info which branches you couldn't check.
+- Hackage code search for the trigger pattern:
+  `curl -s "https://hackage-search.serokell.io/rg/<url-encoded regex>"`
+  streams newline-delimited JSON objects with `package`, `path`, `lines`.
 - Issue search: host gitlab.haskell.org, project `ghc/ghc`, e.g.
   `glab api "projects/ghc%2Fghc/issues?search=<terms>&scope=all&per_page=100"`
   (100 is GitLab's max; paginate rather than judge from a truncated list).
