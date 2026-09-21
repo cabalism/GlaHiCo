@@ -1,11 +1,11 @@
 ---
-name: glahico-file-issue
+name: glahico-draft-ticket
 description: >
   Turn a GlaHiCo review finding into a draft GHC issue: verify it still
   applies on origin/master, search gitlab.haskell.org for duplicates, build
   and run a reproducer, and write a draft ticket into the run dir. Never
-  files the issue itself. Usage: /glahico-file-issue RUN_DIR FINDING_ID
-  (e.g. /glahico-file-issue ~/glahico/runs/local-work-…/20260804T174020 f1).
+  files the issue itself. Usage: /glahico-draft-ticket RUN_DIR FINDING_ID
+  (e.g. /glahico-draft-ticket ~/glahico/runs/local-work-…/20260804T174020 f1).
 ---
 
 # GlaHiCo finding → draft GHC ticket

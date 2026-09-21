@@ -13,7 +13,7 @@ Observations from the 2026-07-29 implementation session (branch `glahico-script`
 
 - Turn a landed-patch check directly into an issue-tracker ticket, without
   the intermediate review report. Reviewing a landed commit already works
-  (`CommitTarget`), and glahico-file-issue drafts tickets with reproducers,
+  (`CommitTarget`), and glahico-draft-ticket drafts tickets with reproducers,
   but the flow still goes review run → finding → ticket.
 
 - Near the title, mention HEAD commit and when the review was generated
@@ -51,5 +51,5 @@ Observations from the 2026-07-29 implementation session (branch `glahico-script`
   the HTML page means the snippet was not created. (Observed 2026-08-06.)
 
 - **Make reproducers more prominent in GlaHiCo-derived tickets** (e.g. those
-  created by glahico-file-issue). See
+  created by glahico-draft-ticket). See
   https://gitlab.haskell.org/ghc/ghc/-/work_items/27658#note_691258.
