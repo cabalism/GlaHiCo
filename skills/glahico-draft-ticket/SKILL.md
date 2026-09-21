@@ -31,8 +31,8 @@ Hard policies:
   reason.
 - **Verify before you claim.** Every factual statement in the ticket
   (what a function does, what a flag means, what a branch contains) is
-  checked against source or haddocks first. Drop what you can't check, or
-  mark it as a guess. The reviewer's verdict is a lead, not a fact.
+  checked against docs and source first. Drop what you can't check, or
+  mark it as a guess. The GlaHiCo report's verdict is a lead, not a fact.
 - **Reproducer effort.** Spend at least ten minutes on a reproducer before
   giving up. If none could be built or run, draft anyway, say so in the
   ticket and give the code-level trigger scenario instead.
@@ -59,13 +59,13 @@ Ticket structure, in this order:
 
    ```
    *This issue was discovered during an LLM-based code review (see
-   "Provenance" below). I, @sjakobi, have checked it for plausibility,
+   "Provenance" below). I have checked it for plausibility,
    but not in depth.*
    ```
 
 3. Summary — only if the title doesn't already say it.
-4. Reproducer — one file, how to run it, observed output. The header
-   comment says what the file does and what to expect; no analysis in it.
+4. Reproducer — one or multiple source files, how to run it, observed output. The header
+   comment says what the file does and what to expect.
 5. Analysis — optional, signposted so it can be skipped.
 6. Facts — which branches and compilers it reproduces on, what introduced
    it (a backport slip, or the original commit/MR), and known user reports
@@ -86,8 +86,7 @@ Inputs to consult:
   `review.md` and `context/`. For sweep runs, `~/glahico/sweeps/*/state.tsv`
   and `worklist.json` map run dirs to groups and to the master-side
   cherry-pick source SHAs — cite branch and master SHAs where known.
-- The original MR discussion for the reviewed commits — it often explains
-  the intent and known limitations.
+- The original MR discussion for the reviewed commits.
 - The active branches: master, ghc-10.0, ghc-9.14, ghc-9.12, ghc-9.10.
   A bug can be branch-only (bad backport) or fixed on master but not
   backported. Check the reproducer with the compilers available — ghcup
