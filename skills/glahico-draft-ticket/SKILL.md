@@ -61,6 +61,9 @@ nothing else:
 - Predicted vs observed: if the reproducer wasn't run, say "Predicted,
   not observed:" once before the expected failure. The file's header
   comment states only the correct behaviour.
+- Code blocks longer than ~10 lines (sources, output, dumps) go in
+  `<details><summary>…</summary>`, with a blank line after
+  `</summary>` so GitLab renders the fence inside.
 
 Where things go:
 
