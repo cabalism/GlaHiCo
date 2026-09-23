@@ -50,9 +50,14 @@ nothing else:
   leave out why you believe it.
 - No lists a reader would feel obliged to check (package names, branch
   head SHAs). Counts and the introducing commit are enough.
-- Nothing that is true by default ("the backport matches master") or
-  already said in Analysis. What the MR discussion did or didn't say
-  belongs in the metadata block unless it changes the picture.
+- Nothing that is true by default ("the backport matches master").
+  What the MR discussion did or didn't say belongs in the metadata
+  block — except a maintainer's judgement on the same mechanism, which
+  always changes the picture and goes in the history bullet of Triage
+  info.
+- Each fact has one home (see the ticket structure). Before finishing,
+  reread the draft and delete every restatement of a commit, branch
+  list, trigger shape or caveat.
 - Predicted vs observed: if the reproducer wasn't run, say "Predicted,
   not observed:" once before the expected failure. The file's header
   comment states only the correct behaviour.
@@ -81,18 +86,30 @@ Ticket structure, in this order:
    but not in depth.*
    ```
 
-3. Summary — only if the title doesn't already say it.
+3. Summary — one to three sentences on the observed behaviour. Branch,
+   release and introducing-commit facts go in the Triage info table,
+   not here. Omit if the title already says it.
 4. Reproducer — one or multiple source files, how to run it, observed
    output. The header comment says what the file does and what the
    correct behaviour is.
 5. Analysis — optional.
-6. Triage info — three or four bullets, facts only: what introduced it
-   (commit, MR, and the issue that MR fixed, or a backport slip) and
-   which active branches carry it; what was run where and what wasn't;
-   exposure evidence, not a verdict — the trigger shape and what
-   conditions it needs (platform, flags), whether the boot libraries,
-   the testsuite in `~/ghc/work` or Hackage contain that pattern, how it
-   fails (loud or silent), and any earlier report of the same symptom.
+6. Triage info — first a table with one row per active branch (master,
+   ghc-10.0, ghc-9.14, ghc-9.12, ghc-9.10), columns: branch; status
+   ("affected since <commit> (<MR>, fixing <issue>)" or "not affected",
+   with the reason if it carries the same patch, or "not checked");
+   checked with (release version, or the commit of a dev build). This
+   table is the only home for branch, release and introducing-commit
+   facts. Then at most three bullets, one or two sentences each, only
+   facts not already stated above:
+   - severity: how it fails (loud or silent) and what a user observes;
+   - exposure: whether the boot libraries, the testsuite in `~/ghc/work`
+     or Hackage contain the trigger pattern, or "not searched";
+   - history: earlier reports of the symptom or mechanism, and in one
+     line what the maintainers concluded there.
+   Omit a bullet with nothing to say. Platform, compilers and flags
+   only if the bug depends on them; the reproducer output already
+   shows what was run. Say what wasn't tested only where a reader
+   would otherwise assume it was.
 7. Provenance, facts only:
 
    ```
@@ -119,7 +136,8 @@ Inputs to consult:
   A bug can be branch-only (bad backport) or fixed on master but not
   backported. Check the reproducer with the compilers available — ghcup
   installs (`ghcup list -c installed`, including prereleases) and
-  `~/ghc/work` — and say in the triage info which branches you couldn't check.
+  `~/ghc/work` — and mark branches you couldn't check as such in the
+  Triage info table.
 - Hackage code search for the trigger pattern:
   `curl -s "https://hackage-search.serokell.io/rg/<url-encoded regex>"`
   streams newline-delimited JSON objects with `package`, `path`, `lines`.
