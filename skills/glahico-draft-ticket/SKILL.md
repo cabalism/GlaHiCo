@@ -137,7 +137,10 @@ Inputs to consult:
   `review.md` and `context/`. For sweep runs, `~/glahico/sweeps/*/state.tsv`
   and `worklist.json` map run dirs to groups and to the master-side
   cherry-pick source SHAs — cite branch and master SHAs where known.
-- The original MR discussion for the reviewed commits.
+- The original MR discussion for the reviewed commits. To find the MR
+  a master commit came from (also for the `<MR>` in the Triage info
+  table), run `~/ghc/commit-mr <sha>` inside `~/ghc/work`; it also
+  resolves commits Marge landed via a batch MR.
 - The active branches: master, ghc-10.0, ghc-9.14, ghc-9.12, ghc-9.10.
   A bug can be branch-only (bad backport) or fixed on master but not
   backported. Check the reproducer with the compilers available — ghcup
