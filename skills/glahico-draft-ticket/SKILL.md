@@ -73,6 +73,9 @@ Where things go:
 - The draft starts with a metadata block for Simon, not part of the
   ticket: suggested labels, related issues, reasons not to file (severity,
   scope, doubts), and the reproducer attempts made if none succeeded.
+  Wrap the whole block in one HTML comment (`<!--` … `-->`) so it
+  doesn't render if pasted along with the ticket; it must not contain
+  `-->` itself.
 - Labels: exactly one `llm-derived::` label — `llm-derived::reproducer` if
   you built and ran one, `llm-derived::unverified` otherwise. Never
   `verified`, `false-positive` or `low-impact`; those are for others to
