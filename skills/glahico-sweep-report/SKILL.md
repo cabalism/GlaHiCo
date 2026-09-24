@@ -98,10 +98,13 @@ to know what was looked at and what came of it:
 
 - One line per finding, two at most. The disposition carries the weight;
   no adjectives about severity or confidence.
-- Each finding line says "identical on master" or "branch-only", because
-  that is what a release manager reads the report for.
-- No re-summarising the reviews. The line says what the finding is, in
-  the review's own terms, and links the review with the finding id.
+- A Filed or Fixed directly line is the reference, its title and the
+  finding id, nothing more: the issue or MR carries the branch facts, and
+  the coverage table links the review. Only a Not pursued line adds the
+  master/branch fact and the review link, since nothing else records
+  them.
+- No re-summarising the reviews. Where a line has to say what the finding
+  is (Bundled, Not pursued), it uses the review's own terms.
 - Every number in the Scope paragraph must match the coverage table.
 - The rules of `glahico-draft-ticket` apply as well: every caveat once,
   no justification aimed at the reviewer, no lists a reader would feel
@@ -110,27 +113,29 @@ to know what was looked at and what came of it:
 Report structure, in this order:
 
 1. Title, as the first line: `# GlaHiCo sweep report: <range>`.
-2. Lead — two sentences: what was reviewed (branch, range, by an
-   LLM-based pipeline) and that the findings were checked for
-   plausibility before triage, not in depth.
-3. Scope — one short paragraph: number of commits, how they were grouped
-   (by source MR; targets are the branch commits, so cherry-pick
-   resolutions were reviewed as shipped), how many groups were reviewed
-   and how many skipped, the number of findings, and the compare link.
+2. Lead — one sentence: what was reviewed (branch, range) and by what
+   ([GlaHiCo](https://gitlab.haskell.org/sjakobi/GlaHiCo), an LLM-based
+   code-review pipeline). No caveats here; the footer covers the
+   report's own origin.
+3. Scope — one short paragraph: number of commits with the compare link,
+   that they were grouped by source MR, how many groups were reviewed
+   and how many skipped (the reasons are in Coverage, not here), and the
+   number of findings.
 4. Findings — one line each, under these headings in this order, empty
    ones omitted:
-   - **Filed**: `ghc/ghc#N` — issue title; group and finding id;
-     master/branch fact; review link.
+   - **Filed**: `ghc/ghc#N` — issue title (group and finding id).
    - **Bundled**: `ghc/ghc#N` (the remaining-findings ticket) once, then
-     one line per item.
-   - **Fixed directly**: `ghc/ghc!N` — MR title; group and finding id;
-     review link.
-   - **Reported elsewhere**: where, with the link; group and finding id;
-     review link.
-   - **Not pursued**: what the check showed, in one line (e.g. "refuted:
-     the test does fail on an unfixed RTS, in a later GC"; "already
-     fixed on the branch by ghc/ghc@<sha>"; "moot: release prep rewrote
-     the entry"; "commit message only, nothing to change in the tree").
+     one line per item: what it is (group and finding id).
+   - **Fixed directly**: `ghc/ghc!N` — MR title (group and finding id).
+   - **Reported elsewhere**: where, with the link (group and finding
+     id).
+   - **Not pursued**: group and finding id; what it is; what the check
+     showed, in one line (e.g. "refuted: the test does fail on an
+     unfixed RTS, in a later GC"; "already fixed on the branch by
+     ghc/ghc@<sha>"; "moot: release prep rewrote the entry"; "commit
+     message only, nothing to change in the tree"); "identical on
+     master" or "branch-only" where the check established it; the
+     review link with the finding id.
 5. Coverage — a table of reviewed groups: group | commits | source MR |
    subject | outcome | review. `commits` is the branch SHA, or for a
    range the compare link `ghc/ghc@<parent>...<last>` with the count in
@@ -141,10 +146,13 @@ Report structure, in this order:
    linked. Then the skipped groups with their reason, as a list. Wrap a
    table longer than about 15 rows in `<details>` with a summary line
    giving the count, and a blank line after `</summary>`.
-6. Method — facts only: finder and verifier models and effort per batch,
-   as recorded in the sweep README; a link to
-   [GlaHiCo](https://gitlab.haskell.org/sjakobi/GlaHiCo); and the line
-   "This report was drafted by an LLM agent from the sweep's records."
+6. Method — two facts: the GlaHiCo commit the reviews ran on (a bare
+   SHA links within the GlaHiCo project; check it is on origin), and
+   that each review's "Disclosure" section records base, head, models,
+   effort and token counts. No per-batch model breakdown; the README
+   has it.
+7. Footer — a horizontal rule, then one italic line: "This report was
+   drafted by an LLM agent from the sweep's records."
 
 Final message: the path; counts per section; every `TODO` left in the
 file; dispositions that disagree between `triage.md`, `state.tsv`,
