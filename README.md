@@ -87,16 +87,18 @@ truncations, so readers can judge the output's provenance.
 
 ```sh
 ./glahico.hs publish RUN_DIR
+./glahico.hs publish FILE.md
 ```
 
-posts `RUN_DIR/review.md` as a snippet on
+posts `RUN_DIR/review.md`, or the given markdown file (a sweep report, for
+instance), as a snippet on
 [sjakobi/GlaHiCo](https://gitlab.haskell.org/sjakobi/GlaHiCo/-/snippets),
-titled with the review's H1, and prints the snippet URL. Visibility is
-`internal` (any logged-in gitlab.haskell.org user can view and comment; the
-project's own visibility caps what snippets can have). Snippet comments are
-the feedback channel: `RUN_DIR/snippet.json` records the snippet id so later
-tooling can poll them with the read-only glab token. While that file exists,
-publishing the same run again is refused.
+titled with its H1 and named after the local file, and prints the snippet
+URL. Visibility is `internal` (any logged-in gitlab.haskell.org user can
+view and comment; the project's own visibility caps what snippets can
+have). Snippet comments are the feedback channel: `snippet.json` next to
+the file records the snippet id so later tooling can poll them with the
+read-only glab token. While that file exists, publishing again is refused.
 
 Linking the snippet from the MR remains a manual step. Snippets are authored
 by the token's bot user, not your account.
