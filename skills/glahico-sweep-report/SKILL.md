@@ -97,9 +97,9 @@ the report it goes to:
   a triage entry without a number) → undecided; stop in the pre-check.
 - dropped by the verifier (`findings.md` or the review's Disclosure says
   "refuted" or "dropped" for an id the review has no section for) → not
-  a finding. No line in any section, no id in the coverage table; only
-  the count in Method. `findings.md` may still count these, so recount
-  from the reviews. A published finding that triage refuted afterwards
+  a finding. No line in any section, no id in the coverage table, no
+  count anywhere. `findings.md` may still count these, so recount from
+  the reviews. A published finding that triage refuted afterwards
   is a finding and goes to **Not pursued**.
 
 Writing rules — the reader is a maintainer or release manager who wants
@@ -156,15 +156,11 @@ Report structure, in this order:
    (e.g. "f1 filed, f2 not pursued"); `review` is the snippet number,
    linked. Then the skipped groups with their reason, as a list. Wrap a
    table longer than about 15 rows in `<details>` with a summary line
-   giving the count, and a blank line after `</summary>`.
-6. Method — two facts: the GlaHiCo commit the reviews ran on (a bare
-   SHA links within the GlaHiCo project; check it is on origin), and
-   that each review's "Disclosure" section records base, head, models,
-   effort and token counts. No per-batch model breakdown; the README
-   has it. If the verifier dropped any finder reports, one sentence
-   with their number: "The verifier dropped N further finder reports
-   before publication; the reviews' Disclosure sections count these."
-7. Footer — a horizontal rule, then one italic line: "This report was
+   giving the count, and a blank line after `</summary>`. The section
+   closes with this plain sentence: "The pipeline commit, models,
+   effort and token counts of each review can be found in its
+   Disclosure section." No Method section: the Disclosures carry it.
+6. Footer — a horizontal rule, then one italic line: "This report was
    drafted by an LLM agent from the sweep's records."
 
 Final message: the path; counts per section; every `TODO` left in the
