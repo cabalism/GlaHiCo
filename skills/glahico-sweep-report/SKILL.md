@@ -129,7 +129,9 @@ Report structure, in this order:
 3. Scope — one short paragraph: number of commits with the compare link,
    that they were grouped by source MR, how many groups were reviewed
    and how many skipped (the reasons are in Coverage, not here), and the
-   number of findings, published ones only.
+   number of findings, published ones only, in this form: "The reviews
+   resulted in 11 findings, spread across 5 groups." Reviews don't
+   "report"; the findings result from them.
 4. Findings — one line each, under these headings in this order, empty
    ones omitted:
    - **Filed**: `ghc/ghc#N` — issue title (group and finding id).
