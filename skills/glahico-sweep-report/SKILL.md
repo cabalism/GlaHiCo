@@ -66,13 +66,15 @@ Hard policies:
   without resolving references: `#27833`, `ghc/ghc!16722` and
   `ghc/ghc@<sha>` all stay plain text there (they do link in issue
   previews, which is misleading). So every reference is a markdown link
-  with an absolute URL, the reference as its text:
-  `[ghc/ghc#27833](https://gitlab.haskell.org/ghc/ghc/-/issues/27833)`,
-  `[ghc/ghc!16722](.../ghc/ghc/-/merge_requests/16722)`,
-  `[ghc/ghc@9033629ce22](.../ghc/ghc/-/commit/9033629ce22)`, and for a
-  range `[ghc/ghc@<parent>...<last>](.../ghc/ghc/-/compare/<parent>...<last>)`
-  with three dots and the resolved parent (`git rev-parse 'X^{commit}'`
-  for tags). Snippet links are full URLs too.
+  with an absolute URL. The link text is the bare number or SHA, no
+  `ghc/ghc` prefix, since the whole report is about GHC and the URL
+  says where it points:
+  `[#27833](https://gitlab.haskell.org/ghc/ghc/-/issues/27833)`,
+  `[!16722](.../ghc/ghc/-/merge_requests/16722)`,
+  `[9033629ce22](.../ghc/ghc/-/commit/9033629ce22)`, and for a range
+  `[<parent>...<last>](.../ghc/ghc/-/compare/<parent>...<last>)` with
+  three dots and the resolved parent (`git rev-parse 'X^{commit}'` for
+  tags). Snippet links are full URLs too.
 - **Title** `GlaHiCo sweep report: <range>`. The range is the one the
   sweep README uses, tags where they exist
   (`ghc-9.14.2-rc1..ghc-9.14.2-rc2`), otherwise `<branch> <start>..<end>`
