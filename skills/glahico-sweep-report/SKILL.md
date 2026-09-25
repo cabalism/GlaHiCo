@@ -16,7 +16,10 @@ Vocabulary, used the same way in the draft and in what you say:
 - group: one target spec (a commit or a commit range), one run dir, one
   review.
 - review: a group's `review.md`, published as a GitLab snippet.
-- finding: one numbered item of a review (`f1`, `f2`, ...).
+- finding: one numbered item of a review (`f1`, `f2`, ...). A finder
+  report the verifier dropped before publication is not a finding: it
+  appears in the review only as a count in the Disclosure section, and
+  nobody looked at it after the verifier.
 - remaining-findings ticket: the bundled GHC issue for the findings too
   small for a ticket of their own, made by `glahico-remaining-findings`.
 - sweep report: the document drafted here. Never call it a review, and
@@ -42,7 +45,7 @@ Pre-checks, before any other work:
   stop and ask Simon to run `publish-reviews.sh` — the report links every
   review, and a report with unlinkable rows is not worth drafting.
 - Every finding in `findings.md` has a disposition (see "Dispositions").
-  List the undecided ones and stop.
+  List the undecided ones and stop. Verifier-dropped items need none.
 - No draft exists yet. If `SWEEP_DIR/sweep-report.md` is there, stop and
   point to it; never overwrite it.
 
@@ -92,6 +95,12 @@ the report it goes to:
   other than the case above) → **Not pursued**.
 - own ticket not filed yet (`separate — ...` without an issue number, or
   a triage entry without a number) → undecided; stop in the pre-check.
+- dropped by the verifier (`findings.md` or the review's Disclosure says
+  "refuted" or "dropped" for an id the review has no section for) → not
+  a finding. No line in any section, no id in the coverage table; only
+  the count in Method. `findings.md` may still count these, so recount
+  from the reviews. A published finding that triage refuted afterwards
+  is a finding and goes to **Not pursued**.
 
 Writing rules — the reader is a maintainer or release manager who wants
 to know what was looked at and what came of it:
@@ -120,7 +129,7 @@ Report structure, in this order:
 3. Scope — one short paragraph: number of commits with the compare link,
    that they were grouped by source MR, how many groups were reviewed
    and how many skipped (the reasons are in Coverage, not here), and the
-   number of findings.
+   number of findings, published ones only.
 4. Findings — one line each, under these headings in this order, empty
    ones omitted:
    - **Filed**: `ghc/ghc#N` — issue title (group and finding id).
@@ -150,7 +159,9 @@ Report structure, in this order:
    SHA links within the GlaHiCo project; check it is on origin), and
    that each review's "Disclosure" section records base, head, models,
    effort and token counts. No per-batch model breakdown; the README
-   has it.
+   has it. If the verifier dropped any finder reports, one sentence
+   with their number: "The verifier dropped N further finder reports
+   before publication; the reviews' Disclosure sections count these."
 7. Footer — a horizontal rule, then one italic line: "This report was
    drafted by an LLM agent from the sweep's records."
 
