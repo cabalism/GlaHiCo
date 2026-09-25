@@ -62,12 +62,17 @@ Hard policies:
 - **No new investigation.** Don't re-verify findings, build reproducers,
   or search for duplicates; that was done before triage and by
   `glahico-remaining-findings`. The report is bookkeeping.
-- **Cross-project references.** The snippet lives in `sjakobi/GlaHiCo`,
-  so a bare `#27833`, `!16722` or SHA does not link to GHC. Write
-  `ghc/ghc#27833`, `ghc/ghc!16722`, `ghc/ghc@9033629ce22`, and compare
-  links as `ghc/ghc@<parent-sha>...<last-sha>` with three dots and the
-  resolved parent (`git rev-parse 'X^{commit}'` for tags). Snippet links
-  are full URLs.
+- **Explicit links only.** The snippet's file view renders markdown
+  without resolving references: `#27833`, `ghc/ghc!16722` and
+  `ghc/ghc@<sha>` all stay plain text there (they do link in issue
+  previews, which is misleading). So every reference is a markdown link
+  with an absolute URL, the reference as its text:
+  `[ghc/ghc#27833](https://gitlab.haskell.org/ghc/ghc/-/issues/27833)`,
+  `[ghc/ghc!16722](.../ghc/ghc/-/merge_requests/16722)`,
+  `[ghc/ghc@9033629ce22](.../ghc/ghc/-/commit/9033629ce22)`, and for a
+  range `[ghc/ghc@<parent>...<last>](.../ghc/ghc/-/compare/<parent>...<last>)`
+  with three dots and the resolved parent (`git rev-parse 'X^{commit}'`
+  for tags). Snippet links are full URLs too.
 - **Title** `GlaHiCo sweep report: <range>`. The range is the one the
   sweep README uses, tags where they exist
   (`ghc-9.14.2-rc1..ghc-9.14.2-rc2`), otherwise `<branch> <start>..<end>`
@@ -149,7 +154,7 @@ Report structure, in this order:
      review link with the finding id.
 5. Coverage — a table of reviewed groups: group | commits | source MR |
    subject | outcome | review. `commits` is the branch SHA, or for a
-   range the compare link `ghc/ghc@<parent>...<last>` with the count in
+   range the compare link (see "Explicit links only") with the count in
    parentheses (the parent's short SHA is the first one in the run dir's
    slug; confirm with `git rev-parse`); `subject` is the first commit's;
    `outcome` is "no findings" or the finding ids with their section above
