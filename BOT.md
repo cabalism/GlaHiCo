@@ -99,6 +99,18 @@ sjakobi/GlaHiCo for these checks):
   (Rails CSRF: "The change you requested was rejected"), so it needs a
   logged-in browser session. Until the instance upgrades, submitting the
   batch of reviews happens in a browser logged in as the bot.
+- But REVIEWED is probably unnecessary (source check 2026-10-02, to
+  verify on !3): the sidebar shows the re-request icon for every state
+  except UNREVIEWED (`showRequestReviewButton`), and REST
+  `bulk_publish` leaves the state untouched in 18.11
+  (`DraftNotes::PublishService` and the `ProcessDraftNotePublishedWorker`
+  only handle to-dos and notifications; only `DraftsController#publish`
+  calls `UpdateReviewerStateService`). So draft note + `bulk_publish`
+  via REST as Developer should leave the bot at REVIEW_STARTED
+  ("Reviewer started review") with the re-request icon visible. The
+  only loss is cosmetic: "started review" instead of "left review
+  comments". Test: `bot-experiment.sh 3 start`, then `publish`, then
+  check the author's sidebar.
 
 To-do semantics that shape the implementation:
 
@@ -213,10 +225,14 @@ request file, and marks `generated` on success.
    list, or comment `/request_review @glahico-bot-unofficial`."
 4. Mark the request's to-do done explicitly (do not rely on GitLab's
    asynchronous cleanup; see to-do semantics above). Status `posted`.
-5. Until the instance runs GitLab >= 19.2: submit the review in the
-   browser as the bot so the state becomes REVIEWED and the author gets
-   the re-request icon. From 19.2 on, `bulk_publish` with
-   `reviewer_state=reviewed` does this from `bot post`.
+5. Reviewer state: posting via draft note + `bulk_publish` leaves the
+   bot at REVIEW_STARTED, which already shows the author the re-request
+   icon (see "What the bot can do, by role"; verify on !3). REVIEWED is
+   cosmetic. If wanted anyway before the instance runs GitLab >= 19.2,
+   the cheapest route is not a browser but curl with the bot's session
+   cookie and the page's CSRF token against the internal publish
+   endpoint (see "Browser-free REVIEWED" below). From 19.2 on,
+   `bulk_publish` with `reviewer_state=reviewed` does it from `bot post`.
 
 Ordered so that a crash midway is recoverable by re-running; the request
 status says where it stopped.
@@ -276,6 +292,30 @@ Current thinking (2026-10-01). What the address does, by job:
 Conclusion: no separate mailbox, no paid provider. Durable address on
 the active inbox + filter. Check whether the ghc group enforces 2FA for
 members; if so, store recovery codes safely.
+
+### Browser-free REVIEWED (only if the cosmetic state matters)
+
+The internal endpoint needs a Rails session, not a browser. Options,
+cheapest first:
+
+1. curl with a cookie jar: GET `/users/sign_in`, extract
+   `authenticity_token`, POST username/password (bot has no 2FA), then
+   GET the MR page, read `<meta name="csrf-token">`, and POST
+   `/<proj>/-/merge_requests/:iid/drafts/publish` with
+   `reviewer_state=reviewed` and header `X-CSRF-Token`. About 15 lines
+   of shell; password stored root-owned like the token. Risks: sign-in
+   notification mails, instance rate limits or captcha on sign-in,
+   session expiry (default 7 days idle; the remember-me cookie renews).
+   Alternative to logging in: copy `_gitlab_session` and
+   `remember_user_token` out of the bot Firefox profile's
+   `cookies.sqlite`.
+2. Playwright with headless Chromium and a saved storage state from one
+   manual login. Heavier (Node), breaks on UI changes.
+3. A browser-using agent. Slow, non-deterministic, not worth it for one
+   POST.
+
+All of this is throwaway once the instance reaches 19.2, so invest
+minimally.
 
 ## Edge cases
 
