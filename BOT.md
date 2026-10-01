@@ -97,20 +97,18 @@ sjakobi/GlaHiCo for these checks):
   (`POST /<proj>/-/merge_requests/:iid/drafts/publish` with
   `reviewer_state=reviewed`) rejects the access token with HTTP 422
   (Rails CSRF: "The change you requested was rejected"), so it needs a
-  logged-in browser session. Until the instance upgrades, submitting the
-  batch of reviews happens in a browser logged in as the bot.
-- But REVIEWED is probably unnecessary (source check 2026-10-02, to
-  verify on !3): the sidebar shows the re-request icon for every state
+  logged-in browser session. Not needed, see next point.
+- REVIEWED is unnecessary (source check and verified on !3,
+  2026-10-02): the sidebar shows the re-request icon for every state
   except UNREVIEWED (`showRequestReviewButton`), and REST
   `bulk_publish` leaves the state untouched in 18.11
   (`DraftNotes::PublishService` and the `ProcessDraftNotePublishedWorker`
   only handle to-dos and notifications; only `DraftsController#publish`
   calls `UpdateReviewerStateService`). So draft note + `bulk_publish`
-  via REST as Developer should leave the bot at REVIEW_STARTED
-  ("Reviewer started review") with the re-request icon visible. The
-  only loss is cosmetic: "started review" instead of "left review
-  comments". Test: `bot-experiment.sh 3 start`, then `publish`, then
-  check the author's sidebar.
+  via REST as Developer leaves the bot at REVIEW_STARTED ("Reviewer
+  started review") and the author sees the re-request icon. Confirmed
+  with `bot-experiment.sh 3 start` + `publish`. The only loss is
+  cosmetic: "started review" instead of "left review comments".
 
 To-do semantics that shape the implementation:
 
@@ -225,14 +223,11 @@ request file, and marks `generated` on success.
    list, or comment `/request_review @glahico-bot-unofficial`."
 4. Mark the request's to-do done explicitly (do not rely on GitLab's
    asynchronous cleanup; see to-do semantics above). Status `posted`.
-5. Reviewer state: posting via draft note + `bulk_publish` leaves the
+5. No browser step. Posting via draft note + `bulk_publish` leaves the
    bot at REVIEW_STARTED, which already shows the author the re-request
-   icon (see "What the bot can do, by role"; verify on !3). REVIEWED is
-   cosmetic. If wanted anyway before the instance runs GitLab >= 19.2,
-   the cheapest route is not a browser but curl with the bot's session
-   cookie and the page's CSRF token against the internal publish
-   endpoint (see "Browser-free REVIEWED" below). From 19.2 on,
-   `bulk_publish` with `reviewer_state=reviewed` does it from `bot post`.
+   icon (verified on !3). REVIEWED is cosmetic; "Browser-free REVIEWED"
+   below is kept only in case it is ever wanted. From 19.2 on,
+   `bulk_publish` with `reviewer_state=reviewed` gets it for free.
 
 Ordered so that a crash midway is recoverable by re-running; the request
 status says where it stopped.
@@ -293,7 +288,7 @@ Conclusion: no separate mailbox, no paid provider. Durable address on
 the active inbox + filter. Check whether the ghc group enforces 2FA for
 members; if so, store recovery codes safely.
 
-### Browser-free REVIEWED (only if the cosmetic state matters)
+### Browser-free REVIEWED (not planned; only if the cosmetic state ever matters)
 
 The internal endpoint needs a Rails session, not a browser. Options,
 cheapest first:
@@ -359,7 +354,8 @@ GitLab 19.2 data point:
   Docs: https://docs.gitlab.com/api/draft_notes/
   Still needs `update_merge_request`, i.e. Developer.
 - Once gitlab.haskell.org is on >= 19.2, `bot post` can set REVIEWED
-  via the API; until then the browser is the only route to REVIEWED.
+  via the API; until then only a Rails session can, which is not
+  needed (REVIEW_STARTED already shows the re-request icon).
 
 Docs and issues:
 
