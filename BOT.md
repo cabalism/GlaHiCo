@@ -9,8 +9,11 @@ Purpose: let GHC MR authors request GlaHiCo reviews without pinging Simon.
 - Account created: https://gitlab.haskell.org/glahico-bot-unofficial,
   user id 146625, display name "GlaHiCo Bot". Primary email
   simon.t.jakobi+glahico-bot@proton.me (see "Email for the bot account").
-  Reporter on sjakobi/GlaHiCo since 2026-10-01. Reporter on ghc/ghc
-  requested from a GHC maintainer 2026-10-01, pending.
+  Developer on sjakobi/GlaHiCo since 2026-10-01 (was Reporter for the
+  first experiments). Reporter on ghc/ghc requested from a GHC
+  maintainer 2026-10-01, pending; decision 2026-10-01: aim for
+  Developer instead, so the bot gets the full reviewer experience (can
+  mark itself reviewed, re-request icon appears). Update the ask.
 - Bot personal access token (`api` scope) created 2026-10-01, stored
   root-owned at `~/glahico/bot-token`. Expires 2027-10-01.
 - Instance: GitLab 18.11.12-ee. ghc group does not require 2FA.
@@ -18,49 +21,114 @@ Purpose: let GHC MR authors request GlaHiCo reviews without pinging Simon.
 
 ## Requesting a review
 
-Two ways to trigger, both usable **only by the MR author**:
+The author comments the quick action
 
-1. Comment `@glahico-bot-unofficial review` on the MR. This is also the
-   way to request every subsequent review.
-2. Add `@glahico-bot-unofficial` as a reviewer (first review only; see
-   below for why there is no re-request button).
+    /request_review @glahico-bot-unofficial
 
-Requests from anyone other than the author are ignored (perhaps with a
-short reply saying so). Rationale: keeps cost opt-in and controlled by the
-person who owns the MR.
+on the MR, for the first review and for every subsequent one. Aliases:
+`/assign_reviewer`, `/reviewer`. If the bot is not yet a reviewer this
+adds it; if it is, GitLab re-requests the review. Both produce a
+`review_requested` to-do for the bot, a notification, and a system note
+"requested review from @glahico-bot-unofficial". Adding the bot via the
+Reviewers sidebar is equivalent for the first review.
 
-## What the bot can and cannot do as Reporter (verified 2026-10-01)
+Why the quick action and not the sidebar's re-request icon: the icon is
+hidden for reviewers in state UNREVIEWED (frontend
+`uncollapsed_reviewer_list.vue`, `showRequestReviewButton`), and the bot
+can never leave that state (see below). The backend
+`MergeRequests::RequestReviewService` has no such guard: it resets the
+state, notifies, creates the to-do and the system note regardless of the
+previous state. The quick action and the GraphQL mutation
+`mergeRequestReviewerRereview` both go through that service.
 
-What matters: learning about a request and being able to post a review.
-Both work. Verified on sjakobi/GlaHiCo!3, GitLab 18.11:
+A mention (`@glahico-bot-unofficial review`) also works and yields a
+`directly_addressed`/`mentioned` to-do; keep accepting it, but document
+the quick action as the way.
 
-- Author adds the bot as reviewer -> pending to-do on the bot account
-  (`action_name: review_requested`), plus a system note "requested
+Requests are honoured **only from the MR author** (enforced by the bot;
+GitLab lets anyone with update rights on the MR issue the quick action).
+Rationale: keeps cost opt-in and controlled by the person who owns the MR.
+
+To verify on sjakobi/GlaHiCo!3: author comments the quick action while
+the bot is already a reviewer; expect a new pending `review_requested`
+to-do.
+
+## What the bot can do, by role (verified 2026-10-01 on sjakobi/GlaHiCo!3, GitLab 18.11)
+
+What matters: learning about a request and being able to post a review,
+and with Developer also the normal reviewer UX.
+
+As Reporter:
+
+- Author adds the bot as reviewer, or uses `/request_review` -> pending
+  to-do (`action_name: review_requested`) + system note "requested
   review from @glahico-bot-unofficial".
 - Comment mentioning the bot -> to-do with `action_name:
-  directly_addressed` (mention at the start of the comment) or
-  `mentioned` (elsewhere in the text); accept both. The to-do's `body`
-  carries the comment text, so the poller can check for "review" there.
-  List with REST `GET /todos?type=MergeRequest`.
+  directly_addressed` (mention at the start) or `mentioned` (elsewhere);
+  accept both. The to-do's `body` carries the comment text. List with
+  REST `GET /todos?type=MergeRequest` (default: pending only).
 - Bot posts a comment on the MR under its own name (REST `POST .../notes`
-  suffices; the draft-note route also works). The comment auto-completes
-  the bot's pending to-do for that MR, so `mark_as_done` is only needed
-  on paths where the bot posts nothing.
-- Bot cannot set reviewers (PUT on the MR -> 403; needs Developer), so
-  after a mention-triggered review it cannot add itself to the sidebar.
-  Stay at Reporter anyway: Developer would also unlock approving and
-  pushing.
+  or draft notes + `bulk_publish`).
+- Bot cannot set reviewers (PUT on the MR -> 403) and cannot change its
+  reviewer state; it stays "awaiting review", and the sidebar then shows
+  the author no re-request icon.
 
-Reviewer state is not important for the workflow and not controllable:
-there is no API on this instance that moves the caller to REVIEWED or
-REVIEW_STARTED (no GraphQL mutation; draft notes and `bulk_publish` do
-not change it). APPROVED and REQUESTED_CHANGES are reachable but off
+As Developer (decided role; the bot was raised to Developer on
+sjakobi/GlaHiCo for these checks):
+
+- Bot can set reviewers via REST PUT (`reviewer_ids`), so it can add
+  itself after a mention-triggered review.
+- Creating a draft note moves the bot to REVIEW_STARTED ("review in
+  progress" icon).
+- Browser "Submit review" (plain Comment, never Approve/Request changes)
+  moves it to REVIEWED, system note "left review comments", and the
+  author's sidebar shows the re-request icon.
+- Author clicks re-request -> state back to UNREVIEWED, system note, new
+  `review_requested` to-do. Confirmed.
+- Still no API route to REVIEWED on 18.11; see "GitLab 19.2 data point"
+  in References. Until the instance upgrades, submitting the batch of
+  reviews happens in a browser logged in as the bot.
+
+To-do semantics that shape the implementation:
+
+- GitLab keeps at most one *pending* to-do per (MR, action) for a user
+  (`TodoService#excluded_user_ids`). A re-request while an older
+  `review_requested` to-do is still pending creates nothing.
+- The reviewer's own to-dos are marked done when the review is
+  published, but asynchronously (`ProcessDraftNotePublishedWorker`).
+  Observed: a re-request 47 s after the bot's submit was swallowed, the
+  old to-do was completed afterwards, net result no pending to-do.
+- Therefore `bot post` must mark the request's to-do done itself,
+  immediately after posting, and must do so on skip paths as well.
+- The REST to-do JSON has `created_at` and `updated_at` (done time).
+
+Reviewer state: the bot cannot change its own. Every path (GraphQL,
+REST `bulk_publish`, the browser's "Submit review") ends in
+`MergeRequests::UpdateReviewerStateService`, whose first line requires
+`update_merge_request` on the MR. That permission goes to the MR's
+author/assignees and to Developers, not Reporters. So REVIEW_STARTED is
+not set when the bot creates a draft note, and REVIEWED is not set on
+publish, which matches the experiment. The browser would not help
+either: same service, same check.
+
+What would make the sidebar icon appear (not planned):
+- Developer on ghc/ghc (also unlocks approving, editing any MR, pushing
+  to non-protected branches), plus
+- GitLab >= 19.2, where REST `bulk_publish` gained `reviewer_state`
+  (`reviewed`|`requested_changes`, deliberately no `approved`; added for
+  GitLab's own Duo review agents, gitlab-org/gitlab!237813). On 18.11
+  the browser's internal `drafts/publish` endpoint is the only caller.
+- Oddity: making the bot an *assignee* would also grant
+  `update_merge_request`. Wrong semantics, not worth it.
+
+APPROVED and REQUESTED_CHANGES are reachable in principle but off
 limits: approvals feed merge rules, and reviews are labelled tool output
-(see DESIGN.md). The bot therefore stays UNREVIEWED on every MR, shown
-as "awaiting review" in the sidebar, and GitLab offers the author no
-"re-request review" button for such a reviewer (confirmed on !3). Hence
-the mention comment is the re-trigger; remove-and-re-add the reviewer
-would also work but is not worth documenting.
+(see DESIGN.md). The bot therefore stays UNREVIEWED ("awaiting review")
+on every MR. Cosmetic only, given the quick action above.
+
+Related upstream issues: gitlab-org/gitlab#583745 (Duo: re-request icon
+shown while review in progress), #517909 (submit/re-request emit no
+webhook events), #543648 (show previous state after re-request).
 
 Read-side: GraphQL
 `mergeRequest.reviewers.nodes.mergeRequestInteraction.reviewState`, or
@@ -75,9 +143,9 @@ glab notes: `glab api graphql` turns any `__type` query into a full
 ### Learning about requests
 
 - Set the bot account's notification email to an address Simon reads:
-  GitLab mails on every assignment, re-request, and mention.
+  GitLab mails on every reviewer assignment and mention.
 - `glahico.hs bot poll` (bot token): reads the bot's pending to-dos.
-  Assignment/re-request -> action `review_requested`; comment trigger ->
+  Assignment -> action `review_requested`; comment trigger ->
   `mentioned` / `directly_addressed`. For each, fetch the MR, check the
   requester is the MR author, and print a table: MR, title, trigger,
   head SHA, diff size, previous reviews of that MR.
@@ -85,7 +153,7 @@ glab notes: `glab api graphql` turns any `__type` query into a full
 ### State
 
 One JSON file per request in `~/glahico/bot/requests/<todo-id>.json`.
-The to-do id is the key: each re-request creates a fresh to-do, and the
+The to-do id is the key: each request creates a fresh to-do, and the
 to-do stays pending in GitLab until the bot marks it done, so nothing is
 lost if a local file goes missing. Fields: MR iid, head SHA, trigger,
 requester, status, and once known the run dir and models/effort used.
@@ -116,8 +184,9 @@ then, per-request overrides on `bot run`.
 The interactive `--finder-model`/`--verifier-model` flags keep their
 `opus` alias defaults.
 
-`bot run` records the run dir in the request file and marks `generated`
-on success. (Reviewer state REVIEW_STARTED is not settable via API.)
+`bot run` creates a placeholder draft note on the MR (moves the bot to
+REVIEW_STARTED, visible to the author), records the run dir in the
+request file, and marks `generated` on success.
 
 ### Push
 
@@ -128,10 +197,15 @@ on success. (Reviewer state REVIEW_STARTED is not settable via API.)
 2. (Dropped: the bot cannot add itself as reviewer at Reporter. The
    footer text covers it instead.)
 3. Post one MR comment: review H1, snippet link, models/effort used, and
-   a fixed footer: "To request another review after pushing, comment
-   `@glahico-bot-unofficial review`."
-4. Status `posted`. The comment auto-completes the bot's to-do; reviewer
-   state stays UNREVIEWED (not settable via API).
+   a fixed footer: "To request another review after pushing, click the
+   re-request icon next to @glahico-bot-unofficial in the Reviewers
+   list, or comment `/request_review @glahico-bot-unofficial`."
+4. Mark the request's to-do done explicitly (do not rely on GitLab's
+   asynchronous cleanup; see to-do semantics above). Status `posted`.
+5. Until the instance runs GitLab >= 19.2: submit the review in the
+   browser as the bot so the state becomes REVIEWED and the author gets
+   the re-request icon. From 19.2 on, `bulk_publish` with
+   `reviewer_state=reviewed` does this from `bot post`.
 
 Ordered so that a crash midway is recoverable by re-running; the request
 status says where it stopped.
@@ -199,9 +273,59 @@ members; if so, store recovery codes safely.
 - Optional later: a mention comment may carry `--prompt`-style hints
   ("pay attention to the FFI changes"). Leave out of the first announcement.
 
+## References
+
+GitLab source, branch `18-11-stable-ee` (what gitlab.haskell.org runs,
+18.11.12 as of 2026-10-01):
+
+- Re-request service, no state guard:
+  https://gitlab.com/gitlab-org/gitlab/-/blob/18-11-stable-ee/app/services/merge_requests/request_review_service.rb
+- Reviewer-state service, requires `update_merge_request`:
+  https://gitlab.com/gitlab-org/gitlab/-/blob/18-11-stable-ee/app/services/merge_requests/update_reviewer_state_service.rb
+- Draft note creation sets REVIEW_STARTED (`after_execute`):
+  https://gitlab.com/gitlab-org/gitlab/-/blob/18-11-stable-ee/app/services/draft_notes/create_service.rb
+- Browser publish endpoint with `reviewer_state` param:
+  https://gitlab.com/gitlab-org/gitlab/-/blob/18-11-stable-ee/app/controllers/projects/merge_requests/drafts_controller.rb
+- REST draft notes API (no `reviewer_state` in 18.11):
+  https://gitlab.com/gitlab-org/gitlab/-/blob/18-11-stable-ee/lib/api/draft_notes.rb
+- `update_merge_request` granted to author/assignees (IssuablePolicy)
+  and Developers (ProjectPolicy):
+  https://gitlab.com/gitlab-org/gitlab/-/blob/18-11-stable-ee/app/policies/issuable_policy.rb
+- Sidebar hides the re-request icon for UNREVIEWED
+  (`showRequestReviewButton`):
+  https://gitlab.com/gitlab-org/gitlab/-/blob/18-11-stable-ee/app/assets/javascripts/sidebar/components/reviewers/uncollapsed_reviewer_list.vue
+- Quick action `/request_review` (aliases `/assign_reviewer`,
+  `/reviewer`):
+  https://gitlab.com/gitlab-org/gitlab/-/blob/18-11-stable-ee/lib/gitlab/quick_actions/merge_request_actions.rb
+
+GitLab 19.2 data point:
+
+- REST `POST .../draft_notes/bulk_publish` gained `reviewer_state`
+  (`reviewed`|`requested_changes`, no `approved`), `note`, `internal`.
+  Added for Duo review agents; first shipped in v19.2.0 (June 2026
+  commits, milestone 19.2):
+  https://gitlab.com/gitlab-org/gitlab/-/merge_requests/237813
+  Docs: https://docs.gitlab.com/api/draft_notes/
+  Still needs `update_merge_request`, i.e. Developer.
+- Once gitlab.haskell.org is on >= 19.2, `bot post` can set REVIEWED
+  via the API; until then the browser is the only route to REVIEWED.
+
+Docs and issues:
+
+- Quick actions: https://docs.gitlab.com/user/project/quick_actions/
+- MR reviews (reviewer states, re-request):
+  https://docs.gitlab.com/user/project/merge_requests/reviews/
+- To-dos API: https://docs.gitlab.com/api/todos/
+- Duo Code Review (GitLab's own reviewer bot, for comparison):
+  https://docs.gitlab.com/user/gitlab_duo/code_review/
+- gitlab-org/gitlab#583745 Duo: re-request icon shown while review in
+  progress. #517909 submit/re-request emit no webhook events. #543648
+  show previous state after re-request.
+
 ## Open items
 
-- Wait for Reporter on ghc/ghc (requested 2026-10-01).
+- Upgrade the ghc/ghc membership ask from Reporter to Developer, with
+  the justification from "What the bot can and cannot do".
 - Leave notification level at Participate; decide whether notifications
   go to Proton or Gmail, and set up client filters for push/merge noise.
 - Where to document for GHC devs: wiki page first; MR template comment once proven.
