@@ -79,8 +79,8 @@ cmdP =
     ( command
         "publish"
         ( info
-            (PublishCmd <$> strArgument (metavar "RUN_DIR|REVIEW_MD" <> help "Run directory containing review.md, or the review.md file itself"))
-            (progDesc "Publish a run's review.md as a GitLab snippet")
+            (PublishCmd <$> strArgument (metavar "RUN_DIR|FILE" <> help "Run directory containing review.md, or a markdown file (review.md, a sweep report, ...)"))
+            (progDesc "Publish a run's review.md, or any markdown file, as a GitLab snippet")
         )
         <> metavar "publish"
     )
@@ -303,6 +303,9 @@ runPublish dataDir arg = do
   argIsFile <- doesFileExist arg
   let runDir = if argIsFile then takeDirectory arg else arg
       reviewPath = if argIsFile then arg else runDir </> "review.md"
+      -- The snippet's file name is the local one, so that a sweep report
+      -- is not uploaded as "review.md".
+      fileName = takeFileName reviewPath
       snippetPath = runDir </> "snippet.json"
   haveReview <- doesFileExist reviewPath
   unless haveReview $ die (reviewPath <> " not found")
@@ -323,7 +326,7 @@ runPublish dataDir arg = do
           object
             [ "title" .= title
             , "visibility" .= ("internal" :: Text)
-            , "files" .= [object ["file_path" .= ("review.md" :: Text), "content" .= review]]
+            , "files" .= [object ["file_path" .= T.pack fileName, "content" .= review]]
             ]
   token <- publishToken dataDir
   out <-
