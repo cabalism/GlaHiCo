@@ -10,14 +10,21 @@ Purpose: let GHC MR authors request GlaHiCo reviews without pinging Simon.
   user id 146625, display name "GlaHiCo Bot". Primary email
   simon.t.jakobi+glahico-bot@proton.me (see "Email for the bot account").
   Developer on sjakobi/GlaHiCo since 2026-10-01 (was Reporter for the
-  first experiments). Reporter on ghc/ghc requested from a GHC
-  maintainer 2026-10-01, pending; decision 2026-10-01: aim for
-  Developer instead, so the bot gets the full reviewer experience (can
-  mark itself reviewed, re-request icon appears). Update the ask.
+  first experiments). Developer on ghc/ghc requested from a GHC
+  maintainer 2026-10-01 (initially asked for Reporter, then upgraded the
+  ask so the bot gets the full reviewer experience: can mark itself
+  reviewed, re-request icon appears). No answer yet.
 - Bot personal access token (`api` scope) created 2026-10-01, stored
   root-owned at `~/glahico/bot-token`. Expires 2027-10-01.
 - Instance: GitLab 18.11.12-ee. ghc group does not require 2FA.
-- No code yet: `bot poll/run/post` are not implemented.
+- No code yet. Decision 2026-10-01: the bot is a separate program,
+  `bot.hs` in this repo (same cabal-script style as glahico.hs), not
+  part of glahico.hs. It shells out to glahico.hs for generating and
+  publishing and reads the snippet URL from the run's `snippet.json`.
+  Rationale: the pipeline stays stateless, the bot token and the only
+  code that writes to MRs live in one small program, and the two stay
+  versioned together because the bot depends on glahico.hs's CLI and
+  run-directory layout. Implementation waits for the Developer answer.
 
 ## Requesting a review
 
@@ -86,8 +93,12 @@ sjakobi/GlaHiCo for these checks):
 - Author clicks re-request -> state back to UNREVIEWED, system note, new
   `review_requested` to-do. Confirmed.
 - Still no API route to REVIEWED on 18.11; see "GitLab 19.2 data point"
-  in References. Until the instance upgrades, submitting the batch of
-  reviews happens in a browser logged in as the bot.
+  in References. The browser's internal endpoint
+  (`POST /<proj>/-/merge_requests/:iid/drafts/publish` with
+  `reviewer_state=reviewed`) rejects the access token with HTTP 422
+  (Rails CSRF: "The change you requested was rejected"), so it needs a
+  logged-in browser session. Until the instance upgrades, submitting the
+  batch of reviews happens in a browser logged in as the bot.
 
 To-do semantics that shape the implementation:
 
@@ -144,7 +155,7 @@ glab notes: `glab api graphql` turns any `__type` query into a full
 
 - Set the bot account's notification email to an address Simon reads:
   GitLab mails on every reviewer assignment and mention.
-- `glahico.hs bot poll` (bot token): reads the bot's pending to-dos.
+- `bot.hs poll` (bot token): reads the bot's pending to-dos.
   Assignment -> action `review_requested`; comment trigger ->
   `mentioned` / `directly_addressed`. For each, fetch the MR, check the
   requester is the MR author, and print a table: MR, title, trigger,
@@ -165,7 +176,7 @@ Status: `pending` -> `running` -> `generated` -> `posted`, or `skipped`
 
 Per-request human decision, driven by the poll table.
 
-`glahico.hs bot run TODO_ID [--finder-model ID] [--finder-effort L]
+`bot.hs run TODO_ID [--finder-model ID] [--finder-effort L]
 [--verifier-model ID] [--verifier-effort L]`, `--all` for every pending
 request with defaults.
 
@@ -190,7 +201,7 @@ request file, and marks `generated` on success.
 
 ### Push
 
-`glahico.hs bot post TODO_ID` or `--all` for everything in `generated`:
+`bot.hs post TODO_ID` or `--all` for everything in `generated`:
 
 1. Publish the snippet (existing code path; snippet.json guards
    against double publish).
@@ -324,8 +335,10 @@ Docs and issues:
 
 ## Open items
 
-- Upgrade the ghc/ghc membership ask from Reporter to Developer, with
-  the justification from "What the bot can and cannot do".
+- Developer on ghc/ghc: requested 2026-10-01, awaiting the maintainer's
+  answer. Start implementing `bot.hs` once it is in.
+- `bot.hs run`: run glahico.hs synchronously, or only prepare state and
+  print the command for a manual batch kick-off? Leaning to manual.
 - Leave notification level at Participate; decide whether notifications
   go to Proton or Gmail, and set up client filters for push/merge noise.
 - Where to document for GHC devs: wiki page first; MR template comment once proven.
