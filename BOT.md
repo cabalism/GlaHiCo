@@ -41,6 +41,15 @@ Reporter and `bot.hs` accepts both, but the comment is what gets
 documented: it needs no reviewer entry and leaves no misleading
 "Awaiting review" icon behind.
 
+Command grammar (decided 2026-10-08): exactly `review`, matched
+case-insensitively after the mention; no "please", no `quick`, no
+free-text focus hints. Precedent: `@GitLabDuo` mention, `@coderabbitai
+review`, `@sourcery-ai review`, Rust's `@bors r+`/`@rustbot ready`; none
+use filler words. A later option is `review thorough` as a hint (not a
+guarantee) for the stronger finder at higher effort; model and effort
+stay the operator's decision. Unrecognised mentions: no reply, they
+appear in the poll table and Simon responds by hand.
+
 Once the bot is Developer, the reviewer workflow below becomes the
 documented path. The author comments the quick action
 
