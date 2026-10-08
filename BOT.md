@@ -217,8 +217,8 @@ Defaults for the bot path are pinned full model IDs, never aliases, so
 the models don't drift by accident; the bot path refuses bare aliases.
 
 - verifier: `claude-fable-5-1`, medium
-- finder: opus at high effort (pinned full ID of the current opus).
-  Most cost data is for this configuration.
+- finder: opus at xhigh effort (pinned full ID of the current opus;
+  decided 2026-10-08, was high). Most cost data so far is for high.
 
 Fable has a track record of better findings in some cases, at least one
 typechecker MR. Eventually a simple rule-based choice (e.g. by touched
