@@ -18,6 +18,12 @@ Purpose: let GHC MR authors request GlaHiCo reviews without pinging Simon.
   then the trigger is a comment, see "Requesting a review".
 - Bot personal access token (`api` scope) created 2026-10-01, stored
   root-owned at `~/glahico/bot-token`. Expires 2027-10-01.
+- Read-only token (`read_api` scope, name "glahico-bot read_api")
+  created 2026-10-08, stored at `~/glahico/bot-token-read`, owned by
+  simon, mode 600. Expires 2027-10-08. Verified: authenticates as the
+  bot, lists to-dos, write calls get 403 insufficient_scope. For `bot.hs
+  poll` and agent-assisted triage.
+- Account hardening decided 2026-10-08: no 2FA for now, no SSH keys.
 - Instance: GitLab 18.11.12-ee. ghc group does not require 2FA.
 - No code yet. Decision 2026-10-01: the bot is a separate program,
   `bot.hs` in this repo (same cabal-script style as glahico.hs), not
@@ -355,9 +361,9 @@ Current:
 
 Gaps and planned measures (not yet done):
 
-- Two tokens: a `read_api` token readable by Simon's user for `bot.hs
-  poll` and agent-assisted triage; the `api` token stays behind sudo and
-  only `bot.hs post` reads it.
+- Two tokens (done 2026-10-08): `~/glahico/bot-token-read`
+  (`read_api`) for `bot.hs poll` and agent-assisted triage; the `api`
+  token stays behind sudo and only `bot.hs post` reads it.
 - Token in memory only: `bot.hs` reads it via `sudo cat`, never exports
   it, never puts it on a command line, and spawns glahico.hs with a
   clean environment. The finder/verifier runs are tool-using agents in
@@ -366,9 +372,10 @@ Gaps and planned measures (not yet done):
 - `bot.hs post` is the single write path; allow-list its endpoints
   (draft notes, `bulk_publish`, to-do done, reviewer PUT), never
   approvals or `reviewer_state` other than `reviewed`.
-- Account hardening: enable 2FA (tokens keep working), add no SSH key,
-  no memberships beyond the two projects. Beware sudo `timestamp_type
-  = global`, which would open the gate to every process.
+- Account hardening: no SSH key (done), no memberships beyond the two
+  projects. 2FA deliberately skipped for now (tokens would keep working;
+  it would protect the password login). Beware sudo `timestamp_type =
+  global`, which would open the gate to every process.
 - Consider a shorter token lifetime than one year.
 - The bot's Firefox profile is a second full-power credential with no
   sudo in front of it; anything running as Simon can read it.
