@@ -3,17 +3,19 @@
 Bot account on gitlab.haskell.org: `@glahico-bot-unofficial`.
 Purpose: let GHC MR authors request GlaHiCo reviews without pinging Simon.
 
-## Status (2026-10-01)
+## Status (2026-10-08)
 
 - Workflow below is accepted as the plan.
 - Account created: https://gitlab.haskell.org/glahico-bot-unofficial,
   user id 146625, display name "GlaHiCo Bot". Primary email
   simon.t.jakobi+glahico-bot@proton.me (see "Email for the bot account").
   Developer on sjakobi/GlaHiCo since 2026-10-01 (was Reporter for the
-  first experiments). Developer on ghc/ghc requested from a GHC
-  maintainer 2026-10-01 (initially asked for Reporter, then upgraded the
-  ask so the bot gets the full reviewer experience: can mark itself
-  reviewed, re-request icon appears). No answer yet.
+  first experiments). Reporter on ghc/ghc since 2026-10-08 (asked for
+  Developer; granted Reporter for now). Decision 2026-10-08: the
+  reviewer-based workflow is shelved until the role is Developer, since
+  at Reporter the bot can never leave UNREVIEWED and the author never
+  gets the re-request icon (see "What the bot can do, by role"). Until
+  then the trigger is a comment, see "Requesting a review".
 - Bot personal access token (`api` scope) created 2026-10-01, stored
   root-owned at `~/glahico/bot-token`. Expires 2027-10-01.
 - Instance: GitLab 18.11.12-ee. ghc group does not require 2FA.
@@ -24,11 +26,23 @@ Purpose: let GHC MR authors request GlaHiCo reviews without pinging Simon.
   Rationale: the pipeline stays stateless, the bot token and the only
   code that writes to MRs live in one small program, and the two stay
   versioned together because the bot depends on glahico.hs's CLI and
-  run-directory layout. Implementation waits for the Developer answer.
+  run-directory layout.
 
 ## Requesting a review
 
-The author comments the quick action
+While the bot is Reporter on ghc/ghc (shelved reviewer workflow): the
+author comments
+
+    @glahico-bot-unofficial review
+
+for the first review and for every subsequent one. Yields a
+`directly_addressed` to-do. The quick action below also works at
+Reporter and `bot.hs` accepts both, but the comment is what gets
+documented: it needs no reviewer entry and leaves no misleading
+"Awaiting review" icon behind.
+
+Once the bot is Developer, the reviewer workflow below becomes the
+documented path. The author comments the quick action
 
     /request_review @glahico-bot-unofficial
 
@@ -218,15 +232,20 @@ request file, and marks `generated` on success.
 2. (Dropped: the bot cannot add itself as reviewer at Reporter. The
    footer text covers it instead.)
 3. Post one MR comment: review H1, snippet link, models/effort used, and
-   a fixed footer: "To request another review after pushing, click the
-   re-request icon next to @glahico-bot-unofficial in the Reviewers
-   list, or comment `/request_review @glahico-bot-unofficial`."
+   a fixed footer. At Reporter: "To request another review after
+   pushing, comment `@glahico-bot-unofficial review`." At Developer:
+   "To request another review after pushing, click the re-request icon
+   next to @glahico-bot-unofficial in the Reviewers list, or comment
+   `/request_review @glahico-bot-unofficial`." The footer is the only
+   role-dependent piece of `bot.hs`; make it a flag or config value.
 4. Mark the request's to-do done explicitly (do not rely on GitLab's
    asynchronous cleanup; see to-do semantics above). Status `posted`.
 5. No browser step. Posting via draft note + `bulk_publish` leaves the
    bot at REVIEW_STARTED, which already shows the author the re-request
-   icon (verified on !3). REVIEWED is cosmetic; "Browser-free REVIEWED"
-   below is kept only in case it is ever wanted. From 19.2 on,
+   icon (verified on !3 as Developer; at Reporter the state does not
+   change and the step is harmless). REVIEWED is cosmetic;
+   "Browser-free REVIEWED" below is kept only in case it is ever wanted,
+   and needs Developer too (same permission check). From 19.2 on,
    `bulk_publish` with `reviewer_state=reviewed` gets it for free.
 
 Ordered so that a crash midway is recoverable by re-running; the request
@@ -312,6 +331,39 @@ cheapest first:
 All of this is throwaway once the instance reaches 19.2, so invest
 minimally.
 
+## Access controls
+
+Current:
+
+- One `api` token (GitLab's only write scope), root-owned, read via
+  `sudo cat`, which needs a password on a tty: agent-spawned processes
+  (`sudo -n`) fail. Same gate as glahico.hs's snippet token.
+- Blast radius = memberships: Developer on sjakobi/GlaHiCo, Reporter on
+  ghc/ghc. At Reporter the account can only comment and manage its own
+  to-dos; no approving, pushing, or editing MRs.
+- "Never approve, never request changes" is a rule in the code, not a
+  permission GitLab enforces.
+
+Gaps and planned measures (not yet done):
+
+- Two tokens: a `read_api` token readable by Simon's user for `bot.hs
+  poll` and agent-assisted triage; the `api` token stays behind sudo and
+  only `bot.hs post` reads it.
+- Token in memory only: `bot.hs` reads it via `sudo cat`, never exports
+  it, never puts it on a command line, and spawns glahico.hs with a
+  clean environment. The finder/verifier runs are tool-using agents in
+  the same uid; they must not inherit it. (`bot-experiment.sh` exports
+  `GITLAB_TOKEN`, so during a run it is readable from `/proc`.)
+- `bot.hs post` is the single write path; allow-list its endpoints
+  (draft notes, `bulk_publish`, to-do done, reviewer PUT), never
+  approvals or `reviewer_state` other than `reviewed`.
+- Account hardening: enable 2FA (tokens keep working), add no SSH key,
+  no memberships beyond the two projects. Beware sudo `timestamp_type
+  = global`, which would open the gate to every process.
+- Consider a shorter token lifetime than one year.
+- The bot's Firefox profile is a second full-power credential with no
+  sudo in front of it; anything running as Simon can read it.
+
 ## Edge cases
 
 - Bot removed as reviewer mid-run: treat as cancel, suppress the post.
@@ -371,8 +423,8 @@ Docs and issues:
 
 ## Open items
 
-- Developer on ghc/ghc: requested 2026-10-01, awaiting the maintainer's
-  answer. Start implementing `bot.hs` once it is in.
+- Developer on ghc/ghc: ask again later, with the justification from
+  "What the bot can do, by role". Until then: comment trigger only.
 - `bot.hs run`: run glahico.hs synchronously, or only prepare state and
   print the command for a manual batch kick-off? Leaning to manual.
 - Leave notification level at Participate; decide whether notifications
