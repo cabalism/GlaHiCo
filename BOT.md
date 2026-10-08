@@ -50,8 +50,8 @@ documented: it needs no reviewer entry and leaves no misleading
 "Awaiting review" icon behind.
 
 Command grammar (decided 2026-10-08): exactly `review`, matched
-case-insensitively after the mention; no "please", no `quick`, no
-free-text focus hints. Precedent: `@GitLabDuo` mention, `@coderabbitai
+case-insensitively after the mention, trailing punctuation allowed
+(`review!`); no "please", no `quick`, no free-text focus hints. Precedent: `@GitLabDuo` mention, `@coderabbitai
 review`, `@sourcery-ai review`, Rust's `@bors r+`/`@rustbot ready`; none
 use filler words. A later option is `review thorough` as a hint (not a
 guarantee) for the stronger finder at higher effort; model and effort
@@ -83,9 +83,10 @@ A mention (`@glahico-bot-unofficial review`) also works and yields a
 `directly_addressed`/`mentioned` to-do; keep accepting it, but document
 the quick action as the way.
 
-Requests are honoured **only from the MR author** (enforced by the bot;
-GitLab lets anyone with update rights on the MR issue the quick action).
-Rationale: keeps cost opt-in and controlled by the person who owns the MR.
+Requests are honoured from anyone, not only the MR author (decided
+2026-10-08; an earlier draft had an author-only rule). Whether a review
+is welcome is between the requester and the author; the poll table shows
+the requester, so Simon can still decline by hand.
 
 To verify on sjakobi/GlaHiCo!3: author comments the quick action while
 the bot is already a reviewer; expect a new pending `review_requested`
@@ -205,8 +206,7 @@ glab notes: `glab api graphql` turns any `__type` query into a full
   `directly_addressed` or `mentioned`; for the latter two the comment
   must be exactly the mention plus `review` (so in practice only
   `directly_addressed` passes; a mention mid-comment is `mentioned`
-  and unrecognised); requester must be the MR author; the head SHA
-  must not match an already posted review of that MR; the MR must be
+  and unrecognised); the head SHA must not match an already posted review of that MR; the MR must be
   open. Anything else is recorded as `skipped` with a reason and still
   listed, so Simon can answer by hand. A to-do that already has a
   request file is shown with the file's status; poll is idempotent.
@@ -226,7 +226,7 @@ poll timestamps, status and skip reason, and once known the run dir,
 models/effort used and the snippet URL.
 
 Status: `pending` -> `running` -> `generated` -> `posted`, or `skipped`
-(with a reason: non-author, duplicate SHA, diff too large, ...).
+(with a reason: unrecognised command, duplicate SHA, diff too large, ...).
 
 ### Deciding models and effort, then running
 
@@ -293,11 +293,6 @@ At poll time, if the MR head matches the last posted review for that MR,
 mark `skipped`; `bot post` leaves a one-line comment pointing at the
 previous review and closes the to-do. Consider the same for pure rebases
 with an unchanged diff.
-
-### Non-author requests
-
-Marked `skipped` at poll time. Initially reply nothing (avoid noise);
-reconsider if people are confused.
 
 ### Token
 

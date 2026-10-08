@@ -33,7 +33,7 @@ import Data.Aeson.Encode.Pretty qualified as AP
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as BL
-import Data.Char (isDigit)
+import Data.Char (isDigit, isPunctuation, isSpace)
 import Data.Foldable (toList)
 import Data.List (sortOn)
 import Data.Maybe (fromMaybe)
@@ -230,12 +230,13 @@ saveRequest dataDir r = do
   BL.writeFile path (AP.encodePretty' (AP.defConfig {AP.confCompare = compare}) r <> "\n")
 
 -- | The request body must be the mention followed by exactly @review@,
--- case-insensitively; nothing else. Unrecognised mentions are listed but
--- not acted on, see BOT.md "Requesting a review".
+-- case-insensitively, give or take punctuation ("review!" is fine, "review
+-- please" is not). Unrecognised mentions are listed but not acted on, see
+-- BOT.md "Requesting a review".
 isReviewCommand :: Text -> Bool
 isReviewCommand body =
   case T.stripPrefix ("@" <> T.toLower botUser) (T.toLower (T.strip body)) of
-    Just rest -> T.strip rest == "review"
+    Just rest -> T.dropAround (\c -> isSpace c || isPunctuation c) rest == "review"
     Nothing -> False
 
 -- | Decide what to do with a pending to-do, given the requests already
@@ -245,7 +246,6 @@ triage prior r body
   | r.action `notElem` ["review_requested", "directly_addressed", "mentioned"] =
       skip ("to-do action " <> r.action)
   | r.action /= "review_requested" && not (isReviewCommand body) = skip "unrecognised command"
-  | r.requester /= r.author = skip ("requested by non-author @" <> r.requester)
   | any (\p -> p.status == "posted" && p.headSha == r.headSha) sameMr = skip "head already reviewed"
   | otherwise = ("pending", Nothing)
   where
