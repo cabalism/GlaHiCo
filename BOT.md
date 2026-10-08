@@ -25,7 +25,9 @@ Purpose: let GHC MR authors request GlaHiCo reviews without pinging Simon.
   poll` and agent-assisted triage.
 - Account hardening decided 2026-10-08: no 2FA for now, no SSH keys.
 - Instance: GitLab 18.11.12-ee. ghc group does not require 2FA.
-- No code yet. Decision 2026-10-01: the bot is a separate program,
+- Code: `bot.hs poll` implemented 2026-10-08 (read token only; see
+  "Learning about requests"). `run` and `post` are next.
+- Decision 2026-10-01: the bot is a separate program,
   `bot.hs` in this repo (same cabal-script style as glahico.hs), not
   part of glahico.hs. It shells out to glahico.hs for generating and
   publishing and reads the snippet URL from the run's `snippet.json`.
@@ -194,19 +196,34 @@ glab notes: `glab api graphql` turns any `__type` query into a full
 
 - Set the bot account's notification email to an address Simon reads:
   GitLab mails on every reviewer assignment and mention.
-- `bot.hs poll` (bot token): reads the bot's pending to-dos.
-  Assignment -> action `review_requested`; comment trigger ->
-  `mentioned` / `directly_addressed`. For each, fetch the MR, check the
-  requester is the MR author, and print a table: MR, title, trigger,
-  head SHA, diff size, previous reviews of that MR.
+- `bot.hs poll` (read token): lists the bot's pending MR to-dos,
+  triages each one, records new ones as request files, and prints a
+  table: to-do id, MR, head SHA, `changes_count`, trigger, requester,
+  number of previously posted reviews for that MR, status, title. The
+  to-do JSON embeds the current MR as `target`, so no second fetch.
+  Triage order: to-do action must be `review_requested`,
+  `directly_addressed` or `mentioned`; for the latter two the comment
+  must be exactly the mention plus `review` (so in practice only
+  `directly_addressed` passes; a mention mid-comment is `mentioned`
+  and unrecognised); requester must be the MR author; the head SHA
+  must not match an already posted review of that MR; the MR must be
+  open. Anything else is recorded as `skipped` with a reason and still
+  listed, so Simon can answer by hand. A to-do that already has a
+  request file is shown with the file's status; poll is idempotent.
+  `--state done|all` lists history (never recorded), `--dry-run`
+  writes nothing. Verified 2026-10-08 against the four done to-dos on
+  sjakobi/GlaHiCo!3 and the triage branches in GHCi.
 
 ### State
 
 One JSON file per request in `~/glahico/bot/requests/<todo-id>.json`.
 The to-do id is the key: each request creates a fresh to-do, and the
 to-do stays pending in GitLab until the bot marks it done, so nothing is
-lost if a local file goes missing. Fields: MR iid, head SHA, trigger,
-requester, status, and once known the run dir and models/effort used.
+lost if a local file goes missing. Fields (see `Request` in bot.hs):
+to-do id and action, project, project id, MR iid, title, URL,
+requester, author, head SHA at poll time, `changes_count`, request and
+poll timestamps, status and skip reason, and once known the run dir,
+models/effort used and the snippet URL.
 
 Status: `pending` -> `running` -> `generated` -> `posted`, or `skipped`
 (with a reason: non-author, duplicate SHA, diff too large, ...).
