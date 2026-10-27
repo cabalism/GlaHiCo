@@ -31,7 +31,11 @@ Work in this order, and gather concrete evidence at each step:
 4. WRITE UP. Unless the finding is refuted, write the
    text that will be reported to the MR author and maintainers, as a
    self-contained writeup: what is wrong, why, and the concrete trigger.
-   The writeup is rendered as Markdown; put code in fenced code blocks.
+   Also give a title: The review document
+   puts the title in a heading above the writeup, so the writeup must not
+   begin with a heading or restate the title; use `####` for any
+   subsections. The writeup is rendered as Markdown; put code in fenced
+   code blocks.
    Clarity and readability is most important. Conciseness is also good.
    Do not restate the steps above, and do not talk about
    the finder or the verification process. For an uncertain finding, say
@@ -48,5 +52,5 @@ Work in this order, and gather concrete evidence at each step:
 Verdict rules: "confirmed" only if step 2 produced a concrete trigger that
 step 1 could not rule out; "refuted" if step 1 produced positive evidence the
 finding is wrong; "uncertain" otherwise. Report disprove_evidence,
-prove_evidence, relevance_rationale, writeup, and snippets, with file:line
+prove_evidence, relevance_rationale, title, writeup, and snippets, with file:line
 citations, and set relevant true or false independently of the verdict.

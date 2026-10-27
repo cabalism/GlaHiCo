@@ -709,7 +709,7 @@ verifierSchema =
   object
     [ "type" .= jstr "object"
     , "additionalProperties" .= False
-    , "required" .= map jstr ["verdict", "relevant", "disprove_evidence", "prove_evidence", "relevance_rationale", "writeup", "snippets"]
+    , "required" .= map jstr ["verdict", "relevant", "disprove_evidence", "prove_evidence", "relevance_rationale", "title", "writeup", "snippets"]
     , "properties"
         .= object
           [ "verdict" .= object ["type" .= jstr "string", "enum" .= map jstr ["confirmed", "uncertain", "refuted"]]
@@ -717,6 +717,7 @@ verifierSchema =
           , "disprove_evidence" .= object ["type" .= jstr "string"]
           , "prove_evidence" .= object ["type" .= jstr "string"]
           , "relevance_rationale" .= object ["type" .= jstr "string"]
+          , "title" .= object ["type" .= jstr "string"]
           , "writeup" .= object ["type" .= jstr "string"]
           , "snippets"
               .= object
@@ -784,6 +785,7 @@ data Verdict = Verdict
   , disprove_evidence :: Text
   , prove_evidence :: Text
   , relevance_rationale :: Text
+  , title :: Text
   , writeup :: Text
   , snippets :: [Snippet]
   }
@@ -792,6 +794,13 @@ data Verdict = Verdict
 instance FromJSON Verdict
 
 instance ToJSON Verdict
+
+-- The verifier's title wins: it knows what was actually established, and the
+-- finder's title is a pre-verification hypothesis.
+findingHeading :: Finding -> Verdict -> Text
+findingHeading f v = f.id <> ": " <> (if T.null title then f.title else title)
+  where
+    title = T.strip v.title
 
 embedFinding :: Finding -> Verdict -> Value
 embedFinding f v = case toJSON v of
@@ -1109,7 +1118,7 @@ renderReview r =
       ]
     droppedFvs = [(f, v) | (f, v, _) <- r.verified, v.verdict == "refuted"]
     block extraLines (f, v, snips) =
-      [ "### " <> f.id <> ": " <> f.title
+      [ "### " <> findingHeading f v
       , ""
       ]
         ++ concatMap snippetLines snips
@@ -1152,8 +1161,8 @@ renderReview r =
           label
             : ""
             : [ "- [" <> heading <> "](#" <> headingAnchor heading <> ")"
-              | (f, _, _) <- fvs
-              , let heading = f.id <> ": " <> f.title
+              | (f, v, _) <- fvs
+              , let heading = findingHeading f v
               ]
             ++ [""]
     findingsSection
