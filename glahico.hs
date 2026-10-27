@@ -732,7 +732,7 @@ verifierSchema =
                             [ "file" .= object ["type" .= jstr "string"]
                             , "first_line" .= object ["type" .= jstr "integer"]
                             , "last_line" .= object ["type" .= jstr "integer"]
-                            , "key_line" .= object ["type" .= jstr "integer"]
+                            , "key_line" .= object ["type" .= map jstr ["integer", "null"]]
                             ]
                       ]
                 ]
@@ -766,12 +766,13 @@ instance ToJSON Findings
 
 -- | A line range the verifier wants shown to the reader; the report quotes
 -- the range from the head checkout rather than trusting model-quoted code.
--- @key_line@ is the core spot within the range, marked with an arrow comment.
+-- @key_line@ is the core spot within the range, marked with an arrow comment;
+-- Nothing when no single line is at fault.
 data Snippet = Snippet
   { file :: Text
   , first_line :: Int
   , last_line :: Int
-  , key_line :: Int
+  , key_line :: Maybe Int
   }
   deriving (Generic, Show)
 
@@ -1029,7 +1030,7 @@ extractSnippet worktree s = do
             -- language's syntax and bare otherwise.
             marker = maybe "" (\p -> T.strip p <> " ") commentPrefix <> "<========== HERE"
             marked =
-              [ if n == s.key_line then l <> "  " <> marker else l
+              [ if Just n == s.key_line then l <> "  " <> marker else l
               | (n, l) <- zip [lo ..] picked
               ]
         pure $
