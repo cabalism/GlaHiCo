@@ -40,12 +40,14 @@ Work in this order, and gather concrete evidence at each step:
    Do not restate the steps above, and do not talk about
    the finder or the verification process. For an uncertain finding, say
    plainly what you could and could not establish.
-   Also report one snippet: the line range of the code
-   the reader most needs to see, in the file as it is in this checkout —
-   the primary evidence, short and
-   focused (roughly 5–15 lines), with key_line naming the single line at the
-   core of the issue within that range. This range will be included as a
-   snippet in the final review document.
+   Report a snippet when a specific range of code is the primary
+   evidence: the line range the reader most needs to see, in the file as
+   it is in this checkout, short and focused (roughly 5–15 lines). The
+   range is quoted from the checkout into the final review document,
+   above the writeup. Set key_line to the single line at the core of the
+   issue, or null when no one line is at fault. Leave the snippets list
+   empty when the finding is about a file's existence, an omission, or
+   anything a range of code would not show.
    For a refuted finding, leave the writeup empty and the snippets
    list empty.
 
