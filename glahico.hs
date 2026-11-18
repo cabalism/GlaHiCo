@@ -52,6 +52,7 @@ import System.Exit (ExitCode (..), die)
 import System.FilePath (takeDirectory, takeExtension, takeFileName, (</>))
 import System.IO (BufferMode (..), hPutStrLn, hSetBuffering, stderr, stdout)
 import System.Process.Typed (byteStringInput, nullStream, proc, readProcess, runProcess, setEnv, setStdin, setWorkingDir)
+import Text.Printf (printf)
 
 --------------------------------------------------------------------------------
 -- Options & CLI
@@ -1291,7 +1292,44 @@ data ClaudeRun = ClaudeRun
   { structured :: Value
   , usage :: [(Text, ModelTokens)]
   , finalContext :: Maybe Int
+  , cost :: Maybe Usd -- Nothing when the envelope has no total_cost_usd
   }
+
+-- | A cost in US dollars at Claude API prices, as claude reports it for a
+-- call. On a subscription nothing is billed; the figure is what the same
+-- tokens would have cost through the API.
+newtype Usd = Usd Double
+
+instance Semigroup Usd where
+  Usd a <> Usd b = Usd (a + b)
+
+instance Monoid Usd where
+  mempty = Usd 0
+
+showUsd :: Usd -> String
+showUsd (Usd d) = printf "$%.2f" d
+
+-- | One line for the terminal giving the cost of a run. It covers every
+-- model claude used, the harness's auxiliary haiku calls included, so it can
+-- be a little more than the models named in the disclosure account for.
+costLine :: Maybe Usd -> [Maybe Usd] -> String
+costLine finder verifiers =
+  "Cost: " <> showUsd (mconcat (catMaybes (finder : verifiers))) <> " in Claude API terms (finder "
+    <> maybe "unknown" showUsd finder
+    <> verifierPart
+    <> ")"
+    <> missingPart
+  where
+    n = length verifiers
+    verifierPart
+      | n == 0 = ""
+      | otherwise =
+          ", " <> show n <> " verifier call" <> (if n == 1 then "" else "s") <> " "
+            <> showUsd (mconcat (catMaybes verifiers))
+    missing = length (filter (not . isJust) (finder : verifiers))
+    missingPart
+      | missing == 0 = ""
+      | otherwise = "; " <> show missing <> " call(s) reported no cost"
 
 allowedGitTools :: [String]
 allowedGitTools =
@@ -1386,7 +1424,10 @@ runClaude wt ctxDir envelopePath model effort schema prompt = do
         case mapMaybe (`vInt` src) ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"] of
           [] -> Nothing
           xs -> Just (sum xs)
-  pure ClaudeRun {structured, usage, finalContext}
+      cost = case vKey "total_cost_usd" v of
+        Just (Number n) -> Just (Usd (realToFrac n))
+        _ -> Nothing
+  pure ClaudeRun {structured, usage, finalContext, cost}
 
 --------------------------------------------------------------------------------
 -- Report
@@ -1856,6 +1897,7 @@ runReview dataDir opts = do
           }
       reviewPath = runDir </> "review.md"
   TIO.writeFile reviewPath (renderReview report)
+  putStrLn (costLine finderRun.cost [run.cost | (_, _, _, run) <- verified])
   putStrLn reviewPath
   -- Only on success: an exception earlier keeps the worktree for debugging.
   removeWorktree resolved.worktree

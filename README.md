@@ -80,6 +80,11 @@ usage limits.
 Cost scales mainly with diff size, finder effort, and the number of
 findings — each finding gets an independent verifier run.
 
+A run ends by printing what it cost in the same terms, for the finder
+and for the verifier calls together, taken from the `total_cost_usd`
+that `claude` reports for each call. The figure includes the harness's
+auxiliary haiku calls, which the review's disclosure leaves out.
+
 ## Output
 
 The last line on stdout is the path to the finished review, e.g.
