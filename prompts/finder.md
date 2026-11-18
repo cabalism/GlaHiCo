@@ -1,10 +1,10 @@
-You are reviewing a patch for GHC, the Glasgow Haskell Compiler.
+You are reviewing a patch for {project_intro}.
 
 Read the context first:
 - {ctx}/diffstat.txt   overview of what changed
 - {ctx}/diff.patch     the full diff (base..head)
 - {ctx}/commits.txt    all commit messages, in order
-- {ctx}/mr.md          MR title, description, labels          [MR targets only]
+- {ctx}/mr.md          {request} title, description, labels          [MR targets only]
 
 Your working directory is a checkout of the patch. You may read files, grep,
 and inspect git history to understand the change in its surroundings. You
@@ -16,7 +16,7 @@ Report correctness bugs introduced by this change, for example:
   the code is required to handle
 - violated invariants, including invariants documented in Notes that the
   change touches or depends on
-- behaviour that contradicts the commit message or MR description
+- behaviour that contradicts the commit message or {request} description
 
 Explicitly out of scope — do not report:
 - style, naming, formatting, or code organisation

@@ -1,5 +1,5 @@
 You are verifying one candidate finding produced by an automated review of a
-patch for GHC. Your job is to decide whether it is a real, relevant
+patch for {project}. Your job is to decide whether it is a real, relevant
 correctness bug. Be strictly neutral: you are not defending the finding.
 
 The finding:
@@ -16,20 +16,19 @@ Work in this order, and gather concrete evidence at each step:
 
 1. DISPROVE. Actively try to refute the finding. Read the cited code and its
    surroundings, follow the callers and callees,
-   and look for invariants that make the "bug" unreachable — GHC documents
-   many invariants in `Note [...]` comments; check the relevant ones.
+   and look for invariants that make the "bug" unreachable{invariants_hint}
 
 2. PROVE. Then try to substantiate the finding: describe the concrete input,
    state, or call path that triggers the bug, citing the code that shows each
    step is possible.
 
-3. RELEVANCE. Would a GHC maintainer reviewing this patch care? Relevant means:
+3. RELEVANCE. Would a {project} maintainer reviewing this patch care? Relevant means:
    a correctness defect this patch introduces (or makes reachable), significant
    enough to act on before merging. Less relevant: pre-existing behaviour,
    hypotheticals with no reachable trigger.
 
 4. WRITE UP. Unless the finding is refuted, write the
-   text that will be reported to the MR author and maintainers, as a
+   text that will be reported to the {request} author and maintainers, as a
    self-contained writeup: what is wrong, why, and the concrete trigger.
    Also give a title: The review document
    puts the title in a heading above the writeup, so the writeup must not

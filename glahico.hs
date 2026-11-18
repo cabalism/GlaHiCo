@@ -818,28 +818,74 @@ buildContext res runDir = do
 scriptDir :: FilePath
 scriptDir = takeDirectory __FILE__
 
-loadPrompt :: FilePath -> Bool -> IO Text
-loadPrompt name isMr = do
+-- | The words in the prompts that depend on which project is under review
+-- and on which forge. Each field fills the placeholder named beside it.
+data Wording = Wording
+  { projectName :: Text
+  -- ^ @{project}@
+  , projectIntro :: Text
+  -- ^ @{project_intro}@: the name as first introduced to the finder
+  , invariantsHint :: Text
+  -- ^ @{invariants_hint}@: ends the verifier's sentence about looking for
+  -- invariants, so it carries that sentence's full stop
+  , requestWord :: Text
+  -- ^ @{request}@: what the forge calls a request to merge
+  }
+
+-- | The wording GHC reviews have always had. The hint's line break and
+-- indentation are part of the verifier prompt's layout.
+ghcWording :: Wording
+ghcWording =
+  Wording
+    { projectName = "GHC"
+    , projectIntro = "GHC, the Glasgow Haskell Compiler"
+    , invariantsHint =
+        " — GHC documents\n   many invariants in `Note [...]` comments; check the relevant ones."
+    , requestWord = "MR"
+    }
+
+-- | Merge requests and local ranges are taken to be GHC, as before. A pull
+-- request is worded for its repository, with no hints: those are to be
+-- written from what real reviews get wrong, not guessed at.
+wordingFor :: Target -> Wording
+wordingFor = \case
+  PrTarget (GitHubRepo "haskell/cabal") _ ->
+    pullRequest "Cabal" "Cabal, the Haskell build system (the Cabal library and the cabal-install tool)"
+  PrTarget (GitHubRepo repo) _ -> pullRequest repo repo
+  _ -> ghcWording
+  where
+    pullRequest projectName projectIntro =
+      Wording {projectName, projectIntro, invariantsHint = ".", requestWord = "PR"}
+
+loadPrompt :: Wording -> FilePath -> Bool -> IO Text
+loadPrompt w name isMr = do
   let path = scriptDir </> "prompts" </> name
   ok <- doesFileExist path
   unless ok (die ("prompt file not found: " <> path))
   raw <- TIO.readFile path
   pure $
-    if isMr
-      then raw
-      else T.unlines (filter (not . ("[MR targets only]" `T.isInfixOf`)) (T.lines raw))
+    fill $
+      if isMr
+        then raw
+        else T.unlines (filter (not . ("[MR targets only]" `T.isInfixOf`)) (T.lines raw))
+  where
+    fill =
+      T.replace "{request}" w.requestWord
+        . T.replace "{invariants_hint}" w.invariantsHint
+        . T.replace "{project}" w.projectName
+        . T.replace "{project_intro}" w.projectIntro
 
-renderFinderPrompt :: FilePath -> Bool -> Maybe Text -> IO Text
-renderFinderPrompt ctxDir isMr adhocText = do
-  raw <- loadPrompt "finder.md" isMr
+renderFinderPrompt :: Wording -> FilePath -> Bool -> Maybe Text -> IO Text
+renderFinderPrompt w ctxDir isMr adhocText = do
+  raw <- loadPrompt w "finder.md" isMr
   let p = T.replace "{ctx}" (T.pack ctxDir) raw
   pure $ case adhocText of
     Nothing -> p
     Just extra -> p <> "\n## Additional instructions for this run\n\n" <> extra <> "\n"
 
-renderVerifierPrompt :: FilePath -> Bool -> Finding -> IO Text
-renderVerifierPrompt ctxDir isMr f = do
-  raw <- loadPrompt "verifier.md" isMr
+renderVerifierPrompt :: Wording -> FilePath -> Bool -> Finding -> IO Text
+renderVerifierPrompt w ctxDir isMr f = do
+  raw <- loadPrompt w "verifier.md" isMr
   pure (T.replace "{finding}" (lbsText (AP.encodePretty f)) (T.replace "{ctx}" (T.pack ctxDir) raw))
 
 jstr :: Text -> Value
@@ -1497,7 +1543,8 @@ runReview dataDir opts = do
   (ctxDir, truncs) <- buildContext resolved runDir
   putStrLn ("Context pack: " <> ctxDir)
   let isMr = isJust resolved.mr
-  finderPrompt <- renderFinderPrompt ctxDir isMr adhocText
+      wording = wordingFor tgt
+  finderPrompt <- renderFinderPrompt wording ctxDir isMr adhocText
   TIO.writeFile (runDir </> "finder.prompt.txt") finderPrompt
   putStrLn ("Running finder (" <> opts.finderModel <> ", effort " <> opts.finderEffort <> ") ...")
   finderRun <-
@@ -1522,7 +1569,7 @@ runReview dataDir opts = do
       unverifiedN = length allFindings - length toVerify
   verified <- forM (zip [(1 :: Int) ..] toVerify) $ \(n, f) -> do
     putStrLn ("Verifying " <> show n <> "/" <> show (length toVerify) <> ": " <> T.unpack f.title <> " ...")
-    vPrompt <- renderVerifierPrompt ctxDir isMr f
+    vPrompt <- renderVerifierPrompt wording ctxDir isMr f
     let vBase = runDir </> "verdicts" </> ("f" <> show n)
     TIO.writeFile (vBase <> ".prompt.txt") vPrompt
     run <-
