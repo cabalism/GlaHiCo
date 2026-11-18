@@ -34,7 +34,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
-import Data.Char (isAlphaNum, isAscii, isDigit, isHexDigit, toLower)
+import Data.Char (isAlphaNum, isAscii, isDigit, isHexDigit, isSpace, toLower)
 import Data.Foldable (toList)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (intercalate, isInfixOf, isPrefixOf, nub, stripPrefix)
@@ -59,7 +59,13 @@ import System.Process.Typed (byteStringInput, nullStream, proc, readProcess, run
 
 data Adhoc = AdhocText Text | AdhocFile FilePath
 
-data Cmd = ReviewCmd Opts | PublishCmd FilePath
+data Cmd = ReviewCmd Opts | PublishCmd PublishOpts
+
+data PublishOpts = PublishOpts
+  { runArg :: FilePath
+  , reviewsRepo :: Maybe GitHubRepo
+  , dryRun :: Bool
+  }
 
 data Opts = Opts
   { target :: String
@@ -79,12 +85,26 @@ cmdP =
     ( command
         "publish"
         ( info
-            (PublishCmd <$> strArgument (metavar "RUN_DIR|REVIEW_MD" <> help "Run directory containing review.md, or the review.md file itself"))
-            (progDesc "Publish a run's review.md as a GitLab snippet")
+            (PublishCmd <$> publishOptsP)
+            (progDesc "Publish a run's review.md: as a GitHub issue for a pull request, as a GitLab snippet otherwise")
         )
         <> metavar "publish"
     )
     <|> (ReviewCmd <$> optsP)
+
+publishOptsP :: Parser PublishOpts
+publishOptsP =
+  PublishOpts
+    <$> strArgument (metavar "RUN_DIR|REVIEW_MD" <> help "Run directory containing review.md, or the review.md file itself")
+    <*> optional
+      ( option
+          (maybeReader (parseGitHubRepo . T.pack))
+          ( long "reviews-repo"
+              <> metavar "OWNER/REPO"
+              <> help "GitHub repository to post the issue in; required to publish the review of a pull request"
+          )
+      )
+    <*> switch (long "dry-run" <> help "Print the title and body that would be posted, and post nothing")
 
 optsP :: Parser Opts
 optsP =
@@ -165,18 +185,23 @@ parseMrUrl rest
 parsePrUrl :: String -> Either String Target
 parsePrUrl rest = case T.splitOn "/" (T.pack rest) of
   owner : repo : "pull" : n : _
-    | nameOk owner
-    , nameOk repo
+    | Just ghRepo <- parseGitHubRepo (owner <> "/" <> repo)
     , ds <- T.takeWhile isDigit n
     , not (T.null ds)
     , T.all (`elem` ("/?#" :: String)) (T.take 1 (T.drop (T.length ds) n)) ->
-        Right (PrTarget (GitHubRepo (owner <> "/" <> repo)) (PrNumber (read (T.unpack ds))))
+        Right (PrTarget ghRepo (PrNumber (read (T.unpack ds))))
   _ -> Left ("cannot parse GitHub pull request URL: https://github.com/" <> rest)
+
+-- | Accept @OWNER/REPO@ where both parts are names GitHub could have issued.
+parseGitHubRepo :: Text -> Maybe GitHubRepo
+parseGitHubRepo t = case T.splitOn "/" t of
+  [owner, repo] | nameOk owner, nameOk repo -> Just (GitHubRepo t)
+  _ -> Nothing
   where
-    nameOk t =
-      not (T.null t)
-        && t `notElem` [".", ".."]
-        && T.all (\c -> isAscii c && (isAlphaNum c || c `elem` ("-_." :: String))) t
+    nameOk x =
+      not (T.null x)
+        && x `notElem` [".", ".."]
+        && T.all (\c -> isAscii c && (isAlphaNum c || c `elem` ("-_." :: String))) x
 
 --------------------------------------------------------------------------------
 -- Small helpers
@@ -315,31 +340,35 @@ ghJson endpoint = do
 publishProject :: String
 publishProject = "sjakobi%2FGlaHiCo"
 
--- | Snippet creation needs a write-capable token (scope @api@); the
--- glab-configured token is read-only by design. glab prefers GITLAB_TOKEN
--- over its config, so only this step gains write access.
+-- | Publishing needs a write-capable token; the tokens glab and gh are
+-- configured with are for reading. Both tools prefer a token in the
+-- environment over their config, so only this step gains write access.
 --
 -- The token file is root-owned so that agents running as the user cannot
 -- read it; sudo prompts for the password on the controlling tty (and fails
 -- immediately when there is none, i.e. in agent-spawned processes).
-publishToken :: FilePath -> IO String
-publishToken dataDir = do
-  let path = dataDir </> "gitlab-token"
+-- @howToCreate@ is the part of the not-found message that says which token
+-- to make.
+publishToken :: FilePath -> String -> IO String
+publishToken path howToCreate = do
   exists <- doesFileExist path
   unless exists $
     die
       ( path <> " not found.\n"
-          <> "Create an access token with scope `api` (a project access token on\n"
-          <> "sjakobi/GlaHiCo is preferred over a personal one), save it there\n"
+          <> howToCreate
           <> "(single line), then make it root-only:\n"
           <> "  sudo chown root:root " <> path <> " && sudo chmod 600 " <> path
       )
   putStrLn "Reading token (sudo will prompt for your password) ..."
   T.unpack . T.strip . lbsText <$> capture "sudo" ["cat", path]
 
+-- | Where a published review ended up, as recorded in @snippet.json@.
+data Published = Published {publishedId :: Int, publishedUrl :: Text, host :: Text}
+
 -- | The argument may be the run directory or the review.md file itself.
-runPublish :: FilePath -> FilePath -> IO ()
-runPublish dataDir arg = do
+runPublish :: FilePath -> PublishOpts -> IO ()
+runPublish dataDir opts = do
+  let arg = opts.runArg
   argIsFile <- doesFileExist arg
   let runDir = if argIsFile then takeDirectory arg else arg
       reviewPath = if argIsFile then arg else runDir </> "review.md"
@@ -347,7 +376,7 @@ runPublish dataDir arg = do
   haveReview <- doesFileExist reviewPath
   unless haveReview $ die (reviewPath <> " not found")
   published <- doesFileExist snippetPath
-  when published $ do
+  when (published && not opts.dryRun) $ do
     prev <- eitherDecode <$> BL.readFile snippetPath
     let url = either (const "?") (fromMaybe "?" . vText "web_url") prev
     die
@@ -358,14 +387,61 @@ runPublish dataDir arg = do
   let title = case T.lines review of
         (l : _) | Just t <- T.stripPrefix "# " l -> t
         _ -> "GlaHiCo review"
-      body =
+  forge <- runForge runDir
+  let (postTitle, postBody) = case forge of
+        Just "github" -> (inertTitle title, issueBody review)
+        _ -> (title, review)
+  if opts.dryRun
+    then do
+      TIO.putStrLn ("Title: " <> postTitle)
+      TIO.putStrLn ""
+      TIO.putStr postBody
+    else do
+      done <- case forge of
+        Just "github" -> case opts.reviewsRepo of
+          Just repo -> publishIssue dataDir repo postTitle postBody
+          Nothing ->
+            die
+              ( "this run reviewed a GitHub pull request, which is published as an issue;\n"
+                  <> "say which repository to post it in with --reviews-repo OWNER/REPO"
+              )
+        _ -> publishSnippet dataDir postTitle postBody
+      now <- getCurrentTime
+      BL.writeFile snippetPath $
+        AP.encodePretty $
+          object
+            [ "id" .= done.publishedId
+            , "web_url" .= done.publishedUrl
+            , "project" .= done.host
+            , "published_at" .= formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now
+            ]
+      putStrLn (T.unpack done.publishedUrl)
+
+-- | The forge recorded when the run was made. Runs from before
+-- @target.json@ existed have none and are published as snippets.
+runForge :: FilePath -> IO (Maybe Text)
+runForge runDir = do
+  let path = runDir </> "target.json"
+  exists <- doesFileExist path
+  if not exists
+    then pure Nothing
+    else
+      eitherDecode <$> BL.readFile path
+        >>= either (\e -> die (path <> ": " <> e)) (pure . vText "forge")
+
+publishSnippet :: FilePath -> Text -> Text -> IO Published
+publishSnippet dataDir title review = do
+  let body =
         A.encode $
           object
             [ "title" .= title
             , "visibility" .= ("internal" :: Text)
             , "files" .= [object ["file_path" .= ("review.md" :: Text), "content" .= review]]
             ]
-  token <- publishToken dataDir
+  token <-
+    publishToken (dataDir </> "gitlab-token") $
+      "Create an access token with scope `api` (a project access token on\n"
+        <> "sjakobi/GlaHiCo is preferred over a personal one), save it there\n"
   out <-
     captureWith
       [("GITLAB_TOKEN", token)]
@@ -385,16 +461,162 @@ runPublish dataDir arg = do
   resp <- either (\e -> die ("snippet response: " <> e)) pure (eitherDecode out)
   sid <- maybe (die "snippet response: missing field id") pure (vInt "id" resp)
   url <- reqText "snippet response" "web_url" resp
-  now <- getCurrentTime
-  BL.writeFile snippetPath $
-    AP.encodePretty $
-      object
-        [ "id" .= sid
-        , "web_url" .= url
-        , "project" .= publishProject
-        , "published_at" .= formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now
-        ]
-  putStrLn (T.unpack url)
+  pure Published {publishedId = sid, publishedUrl = url, host = T.pack publishProject}
+
+-- | GitHub's limit on the length of an issue body, in characters.
+issueBodyLimit :: Int
+issueBodyLimit = 65536
+
+-- | Post a review of a pull request as an issue in the reviews repository.
+-- Nothing is written to the repository the pull request belongs to.
+publishIssue :: FilePath -> GitHubRepo -> Text -> Text -> IO Published
+publishIssue dataDir (GitHubRepo repo) title body = do
+  when (T.length body > issueBodyLimit) $
+    die
+      ( "the review is " <> show (T.length body) <> " characters; GitHub limits an issue body to "
+          <> show issueBodyLimit
+      )
+  token <-
+    publishToken (dataDir </> "github-token") $
+      "Create a fine-grained personal access token whose only permission is\n"
+        <> "read and write access to Issues on " <> T.unpack repo <> ", save it there\n"
+  out <-
+    captureWith
+      [("GH_TOKEN", token)]
+      (A.encode (object ["title" .= title, "body" .= body]))
+      "gh"
+      [ "api"
+      , "--hostname"
+      , "github.com"
+      , "-X"
+      , "POST"
+      , "-H"
+      , "Content-Type: application/json"
+      , "--input"
+      , "-"
+      , "repos/" <> T.unpack repo <> "/issues"
+      ]
+  resp <- either (\e -> die ("issue response: " <> e)) pure (eitherDecode out)
+  number <- maybe (die "issue response: missing field number") pure (vInt "number" resp)
+  url <- reqText "issue response" "html_url" resp
+  pure Published {publishedId = number, publishedUrl = url, host = repo}
+
+{- Note [Inert references]
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+A review of a pull request is published as an issue in another repository,
+and the pull request should show nothing of it but the link someone chooses
+to post there. GitHub, though, adds a "mentioned this" entry to the timeline
+of any issue or pull request that an issue body refers to, and notifies any
+user it mentions. A review refers to its target in the disclosure, and the
+verifier's writeups are model output that may refer to anything.
+
+So the published copy has its references made inert, the way Renovate does
+for the changelogs it quotes:
+
+  * links to github.com go through redirect.github.com, which forwards to
+    the same page but is not recognised as a reference;
+  * `#123`, `owner/repo#123`, `GH-123` and `@user` get a zero-width space
+    after the `#`, `-` or `@`, so they read the same but are not linked.
+
+Fenced code blocks and code spans are left alone: GitHub links nothing
+inside them, and the snippets there are quoted from the checkout verbatim.
+The pass is mechanical and is disclosed in a note appended to the issue;
+review.md in the run directory stays as generated.
+-}
+
+-- | The body of the issue for a review: the review with its references made
+-- inert, and a note saying so. See Note [Inert references].
+issueBody :: Text -> Text
+issueBody review =
+  T.stripEnd (inertRefs review)
+    <> "\n\n"
+    <> "_In this published copy, references to GitHub issues, pull requests and"
+    <> " users were made inert mechanically, so that the review does not appear"
+    <> " on their timelines or notify anyone: links to github.com go through"
+    <> " redirect.github.com, and a zero-width space follows `#` and `@`."
+    <> " The text is otherwise as generated._\n"
+
+-- | An issue title is plain text, so the zero-width space goes in as a
+-- character where the body has it as an HTML entity.
+inertTitle :: Text -> Text
+inertTitle = T.concatMap (\c -> if c == '#' || c == '@' then T.pack [c, '\x200B'] else T.singleton c)
+
+-- | Make the references in Markdown text inert, outside fenced code blocks.
+inertRefs :: Text -> Text
+inertRefs = T.intercalate "\n" . go Nothing . T.splitOn "\n"
+  where
+    -- The state is the open fence, if any: its character and length.
+    go :: Maybe (Char, Int) -> [Text] -> [Text]
+    go _ [] = []
+    go Nothing (l : ls) = case fenceRun l of
+      Just (c, n, _) -> l : go (Just (c, n)) ls
+      Nothing -> inertLine l : go Nothing ls
+    go open@(Just (c, n)) (l : ls) = case fenceRun l of
+      Just (c', n', bare) | c' == c, n' >= n, bare -> l : go Nothing ls
+      _ -> l : go open ls
+    -- A line that starts with three or more backticks or tildes: the
+    -- character, how many, and whether nothing else follows.
+    fenceRun l = case T.uncons (T.stripStart l) of
+      Just (c, _)
+        | c == '`' || c == '~'
+        , (run, rest) <- T.span (== c) (T.stripStart l)
+        , T.length run >= 3 ->
+            Just (c, T.length run, T.null (T.strip rest))
+      _ -> Nothing
+
+-- | Make the references in one line of Markdown inert, outside code spans.
+inertLine :: Text -> Text
+inertLine = T.concat . go ' '
+  where
+    zwsp = "&#8203;"
+    -- @prev@ is the character before the text still to be read.
+    go :: Char -> Text -> [Text]
+    go prev t = case T.uncons t of
+      Nothing -> []
+      Just (c, rest)
+        | c == '`'
+        , (ticks, after) <- T.span (== '`') t ->
+            case codeSpan (T.length ticks) after of
+              Just (code, rest') -> ticks : code : go '`' rest'
+              Nothing -> ticks : go '`' after
+        | Just url <- urlAt t
+        , rest' <- T.drop (T.length url) t ->
+            inertUrl url : go (T.last url) rest'
+        | c == '#', prev /= '&', startsWith isDigit rest -> "#" : zwsp : go c rest
+        | c == '@', not (isAlphaNum prev), startsWith isAlphaNum rest -> "@" : zwsp : go c rest
+        | not (isAlphaNum prev)
+        , T.toLower (T.take 3 t) == "gh-"
+        , startsWith isDigit (T.drop 3 t) ->
+            T.take 3 t : zwsp : go '-' (T.drop 3 t)
+        | otherwise -> T.singleton c : go c rest
+    startsWith f = maybe False (f . fst) . T.uncons
+    -- The rest of a code span opened by @k@ backticks, up to and including
+    -- the run of exactly @k@ that closes it, and what follows. Nothing if
+    -- the line has no such run, in which case the backticks were just text.
+    codeSpan :: Int -> Text -> Maybe (Text, Text)
+    codeSpan k t =
+      let (pre, r) = T.break (== '`') t
+          (run, r') = T.span (== '`') r
+       in if T.null r
+            then Nothing
+            else
+              if T.length run == k
+                then Just (pre <> run, r')
+                else (\(code, after) -> (pre <> run <> code, after)) <$> codeSpan k r'
+    -- A URL runs to the next white space; only its host is ever changed, so
+    -- taking in trailing punctuation does no harm.
+    urlAt t
+      | any (`T.isPrefixOf` t) ["https://", "http://"] = Just (T.takeWhile (not . isSpace) t)
+      | otherwise = Nothing
+    inertUrl url =
+      case [ r
+           | scheme <- ["https://", "http://"]
+           , www <- ["www.", ""]
+           , Just r <- [T.stripPrefix (scheme <> www <> "github.com") url]
+           , not (startsWith (\c -> isAlphaNum c || c == '.' || c == '-') r)
+           ] of
+        r : _ -> "https://redirect.github.com" <> r
+        [] -> url
 
 --------------------------------------------------------------------------------
 -- Mirror & worktree
@@ -1514,7 +1736,7 @@ main = do
   home <- getHomeDirectory
   let dataDir = home </> "glahico"
   case cmd of
-    PublishCmd runDir -> runPublish dataDir runDir
+    PublishCmd publishOpts -> runPublish dataDir publishOpts
     ReviewCmd opts -> runReview dataDir opts
 
 runReview :: FilePath -> Opts -> IO ()
@@ -1538,6 +1760,12 @@ runReview dataDir opts = do
   let ts = formatTime defaultTimeLocale "%Y%m%dT%H%M%S" now
       runDir = dataDir </> "runs" </> resolved.slug </> ts
   createDirectoryIfMissing True (runDir </> "verdicts")
+  -- Read by `publish`, which posts a pull request's review differently.
+  BL.writeFile (runDir </> "target.json") $
+    AP.encodePretty $ case tgt of
+      MrTarget project iid -> object ["forge" .= ("gitlab" :: Text), "project" .= project, "number" .= iid]
+      PrTarget (GitHubRepo repo) (PrNumber n) -> object ["forge" .= ("github" :: Text), "project" .= repo, "number" .= n]
+      _ -> object ["forge" .= ("local" :: Text)]
   putStrLn ("Run directory: " <> runDir)
   putStrLn "Assembling context pack ..."
   (ctxDir, truncs) <- buildContext resolved runDir
