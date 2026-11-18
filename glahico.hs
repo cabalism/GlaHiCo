@@ -410,13 +410,23 @@ urlEncodeProject = T.unpack . T.replace "/" "%2F"
 projectSlug :: Text -> String
 projectSlug = T.unpack . T.replace "/" "-"
 
-ensureMirror :: FilePath -> IO ()
-ensureMirror mirror = do
+-- | Directory of a bare mirror under the data directory.
+newtype MirrorDir = MirrorDir FilePath
+
+-- | How a repository is named in progress messages.
+newtype RepoLabel = RepoLabel String
+
+-- | URL a repository is cloned from.
+newtype CloneUrl = CloneUrl String
+
+-- | Make sure the bare mirror exists, cloning it on first use.
+ensureMirror :: MirrorDir -> RepoLabel -> CloneUrl -> IO ()
+ensureMirror (MirrorDir mirror) (RepoLabel label) (CloneUrl url) = do
   exists <- doesDirectoryExist mirror
   unless exists $ do
-    putStrLn ("One-time setup: mirroring ghc/ghc (multiple GB) into " <> mirror <> " ...")
+    putStrLn ("One-time setup: mirroring " <> label <> " into " <> mirror <> " ...")
     createDirectoryIfMissing True (takeDirectory mirror)
-    inherit "git" ["clone", "--mirror", "git@gitlab.haskell.org:ghc/ghc.git", mirror]
+    inherit "git" ["clone", "--mirror", url, mirror]
 
 ensureRemote :: FilePath -> Text -> IO String
 ensureRemote mirror project = do
@@ -540,7 +550,12 @@ resolveMr dataDir project iid = do
       )
   meta <- glabJson ("projects/" <> enc <> "/merge_requests/" <> show iid)
   targetBranch <- reqText "MR metadata" "target_branch" meta
-  ensureMirror mirror
+  -- Every gitlab.haskell.org project shares the ghc/ghc mirror: other
+  -- projects are taken to be forks of it and are added as remotes.
+  ensureMirror
+    (MirrorDir mirror)
+    (RepoLabel "ghc/ghc (multiple GB)")
+    (CloneUrl "git@gitlab.haskell.org:ghc/ghc.git")
   remote <- if project == "ghc/ghc" then pure "origin" else ensureRemote mirror project
   -- GitLab prunes the head ref of closed and merged MRs after a while, but
   -- keeps the head commit fetchable by SHA.
