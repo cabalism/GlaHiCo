@@ -508,12 +508,27 @@ resolveMr dataDir project iid = do
   targetBranch <- reqText "MR metadata" "target_branch" meta
   ensureMirror mirror
   remote <- if project == "ghc/ghc" then pure "origin" else ensureRemote mirror project
+  -- GitLab prunes the head ref of closed and merged MRs after a while, but
+  -- keeps the head commit fetchable by SHA.
+  let mrRef = "refs/merge-requests/" <> show iid <> "/head"
+  advertised <- gitIn mirror ["ls-remote", remote, mrRef]
+  headSrc <- case vText "sha" meta of
+    _ | not (T.null advertised) -> pure mrRef
+    Just sha -> do
+      warn
+        ( "!" <> show iid <> " has no head ref on the remote (GitLab prunes them for closed and merged MRs);"
+            <> " fetching its last head "
+            <> T.unpack sha
+            <> " instead"
+        )
+      pure (T.unpack sha)
+    Nothing -> die ("!" <> show iid <> " has no head ref on the remote, and the MR metadata has no sha")
   putStrLn ("Fetching !" <> show iid <> " from " <> T.unpack project <> " ...")
   gitLoud
     mirror
     [ "fetch"
     , remote
-    , "+refs/merge-requests/" <> show iid <> "/head:refs/glahico/" <> slug
+    , "+" <> headSrc <> ":refs/glahico/" <> slug
     , "+refs/heads/" <> T.unpack targetBranch <> ":refs/glahico/" <> slug <> "-base"
     ]
   headSha <- gitIn mirror ["rev-parse", "refs/glahico/" <> slug]
