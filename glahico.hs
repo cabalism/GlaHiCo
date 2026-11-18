@@ -360,15 +360,49 @@ runPublish dataDir arg = do
 -- Mirror & worktree
 --------------------------------------------------------------------------------
 
-data MrData = MrData {project :: Text, iid :: Int, meta :: Value}
+-- | What the context pack and the report need to know about a merge request,
+-- taken out of the forge's JSON once, so that neither depends on its field
+-- names.
+data ChangeMeta = ChangeMeta
+  { project :: Text
+  , ref :: Text
+  -- ^ how the forge writes the request's number, e.g. @!16419@
+  , title :: Text
+  , author :: Text
+  , sourceBranch :: Text
+  , targetBranch :: Text
+  , labels :: [Text]
+  , url :: Text
+  , description :: Text
+  }
 
 data Resolved = Resolved
   { slug :: String
   , worktree :: FilePath
   , baseSha :: Text
   , headSha :: Text
-  , mr :: Maybe MrData
+  , mr :: Maybe ChangeMeta
   }
+
+-- | Read a GitLab merge request's API JSON.
+gitlabChangeMeta :: Text -> Int -> Value -> ChangeMeta
+gitlabChangeMeta project iid v =
+  ChangeMeta
+    { project
+    , ref = "!" <> tshow iid
+    , title = fromMaybe "(no title)" (vText "title" v)
+    , author = case vKey "author" v of
+        Just a -> fromMaybe "?" (vText "name" a) <> maybe "" (\u -> " (@" <> u <> ")") (vText "username" a)
+        Nothing -> "?"
+    , sourceBranch = fromMaybe "?" (vText "source_branch" v)
+    , targetBranch = fromMaybe "?" (vText "target_branch" v)
+    , labels = [l | String l <- vArray "labels" v]
+    , url =
+        fromMaybe
+          ("https://gitlab.haskell.org/" <> project <> "/-/merge_requests/" <> tshow iid)
+          (vText "web_url" v)
+    , description = fromMaybe "" (vText "description" v)
+    }
 
 urlEncodeProject :: Text -> String
 urlEncodeProject = T.unpack . T.replace "/" "%2F"
@@ -543,7 +577,7 @@ resolveMr dataDir project iid = do
   baseSha <- gitIn mirror ["merge-base", "refs/glahico/" <> slug, "refs/glahico/" <> slug <> "-base"]
   let wt = dataDir </> "wt" </> slug
   prepareWorktree (dataDir </> "submodules") mirror wt headSha
-  pure Resolved {slug, worktree = wt, baseSha, headSha, mr = Just (MrData project iid meta)}
+  pure Resolved {slug, worktree = wt, baseSha, headSha, mr = Just (gitlabChangeMeta project iid meta)}
 
 -- | rev-parse a spec; if unknown locally, try fetching it from the repo's
 -- remotes (direct-SHA fetch for full hashes, plain fetch otherwise) and retry.
@@ -604,30 +638,21 @@ capBytes name cap content
       TE.decodeUtf8Lenient atNewline
         <> "\n[truncated: " <> name <> " exceeded " <> tshow cap <> " bytes]\n"
 
-authorOf :: Value -> Text
-authorOf v = case vKey "author" v of
-  Just a -> fromMaybe "?" (vText "name" a) <> maybe "" (\u -> " (@" <> u <> ")") (vText "username" a)
-  Nothing -> "?"
-
-mrMarkdown :: MrData -> Text
+mrMarkdown :: ChangeMeta -> Text
 mrMarkdown md =
   T.unlines
-    [ "# " <> fromMaybe "(no title)" (vText "title" m) <> " (!" <> tshow md.iid <> ")"
+    [ "# " <> md.title <> " (" <> md.ref <> ")"
     , ""
     , "- Project: " <> md.project
-    , "- Author: " <> authorOf m
-    , "- Branches: " <> branch "source_branch" <> " → " <> branch "target_branch"
-    , "- Labels: " <> (if T.null labels then "(none)" else labels)
-    , "- URL: " <> fromMaybe "" (vText "web_url" m)
+    , "- Author: " <> md.author
+    , "- Branches: " <> md.sourceBranch <> " → " <> md.targetBranch
+    , "- Labels: " <> (if null md.labels then "(none)" else T.intercalate ", " md.labels)
+    , "- URL: " <> md.url
     , ""
     , "## Description"
     , ""
-    , fromMaybe "" (vText "description" m)
+    , md.description
     ]
-  where
-    m = md.meta
-    branch k = fromMaybe "?" (vText k m)
-    labels = T.intercalate ", " [l | String l <- vArray "labels" m]
 
 buildContext :: Resolved -> FilePath -> IO (FilePath, [Text])
 buildContext res runDir = do
@@ -1383,9 +1408,8 @@ runReview dataDir opts = do
   (targetDesc, titleSuffix) <- case resolved.mr of
     Just md ->
       pure
-        ( "[" <> md.project <> "!" <> tshow md.iid
-            <> "](https://gitlab.haskell.org/" <> md.project <> "/-/merge_requests/" <> tshow md.iid <> ")"
-        , fromMaybe "(no title)" (vText "title" md.meta) <> " (!" <> tshow md.iid <> ")"
+        ( "[" <> md.project <> md.ref <> "](" <> md.url <> ")"
+        , md.title <> " (" <> md.ref <> ")"
         )
     Nothing
       | RangeTarget a b <- tgt ->
