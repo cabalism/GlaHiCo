@@ -519,6 +519,11 @@ for the changelogs it quotes:
   * `#123`, `owner/repo#123`, `GH-123` and `@user` get a zero-width space
     after the `#`, `-` or `@`, so they read the same but are not linked.
 
+One more change is not about references. A review opens with a list of
+links to its findings, `[f1: ...](#f1-...)`. GitHub gives the headings of an
+issue body no anchors, so in an issue those links go nowhere; the published
+copy keeps their text and drops the link.
+
 Fenced code blocks and code spans are left alone: GitHub links nothing
 inside them, and the snippets there are quoted from the checkout verbatim.
 The pass is mechanical and is disclosed in a note appended to the issue;
@@ -535,6 +540,8 @@ issueBody review =
     <> " users were made inert mechanically, so that the review does not appear"
     <> " on their timelines or notify anyone: links to github.com go through"
     <> " redirect.github.com, and a zero-width space follows `#` and `@`."
+    <> " Links to headings within the review were reduced to their text, as"
+    <> " GitHub gives headings in an issue no anchors."
     <> " The text is otherwise as generated._\n"
 
 -- | An issue title is plain text, so the zero-width space goes in as a
@@ -565,7 +572,8 @@ inertRefs = T.intercalate "\n" . go Nothing . T.splitOn "\n"
             Just (c, T.length run, T.null (T.strip rest))
       _ -> Nothing
 
--- | Make the references in one line of Markdown inert, outside code spans.
+-- | Make the references in one line of Markdown inert, outside code spans,
+-- and reduce links to headings within the page to their text.
 inertLine :: Text -> Text
 inertLine = T.concat . go ' '
   where
@@ -583,6 +591,9 @@ inertLine = T.concat . go ' '
         | Just url <- urlAt t
         , rest' <- T.drop (T.length url) t ->
             inertUrl url : go (T.last url) rest'
+        | c == '['
+        , Just (label, rest') <- inPageLink rest ->
+            go prev label <> go ')' rest'
         | c == '#', prev /= '&', startsWith isDigit rest -> "#" : zwsp : go c rest
         | c == '@', not (isAlphaNum prev), startsWith isAlphaNum rest -> "@" : zwsp : go c rest
         | not (isAlphaNum prev)
@@ -604,6 +615,26 @@ inertLine = T.concat . go ' '
               if T.length run == k
                 then Just (pre <> run, r')
                 else (\(code, after) -> (pre <> run <> code, after)) <$> codeSpan k r'
+    -- Given what follows a @[@: if it opens a link to a heading in the page,
+    -- @[label](#anchor)@, the label and what follows the link. Brackets may
+    -- nest in the label, as in a title that names a @Note [...]@.
+    inPageLink :: Text -> Maybe (Text, Text)
+    inPageLink t = do
+      n <- closing (0 :: Int) 0 t
+      after <- T.stripPrefix "](#" (T.drop n t)
+      let (_, r) = T.break (\c -> c == ')' || isSpace c) after
+      r' <- T.stripPrefix ")" r
+      pure (T.take n t, r')
+    -- The offset of the @]@ that closes a label, skipping escaped
+    -- characters.
+    closing depth n t = case T.uncons t of
+      Nothing -> Nothing
+      Just ('\\', r) -> closing depth (n + 2) (T.drop 1 r)
+      Just ('[', r) -> closing (depth + 1) (n + 1) r
+      Just (']', r)
+        | depth == 0 -> Just n
+        | otherwise -> closing (depth - 1) (n + 1) r
+      Just (_, r) -> closing depth (n + 1) r
     -- A URL runs to the next white space; only its host is ever changed, so
     -- taking in trailing punctuation does no harm.
     urlAt t

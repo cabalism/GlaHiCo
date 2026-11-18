@@ -170,9 +170,10 @@ posted copy has its references made inert. Otherwise GitHub would add a
 "mentioned this" entry to the timeline of the pull request, and of anything
 else the review refers to, and notify any user it mentions. Outside code
 blocks and code spans, links to github.com go through `redirect.github.com`
-and a zero-width space follows the `#` or `@` of `#123` and `@user`. A note
-appended to the issue says so; `review.md` in the run directory is left as
-generated.
+and a zero-width space follows the `#` or `@` of `#123` and `@user`. The
+links from the summary to each finding are reduced to their text, as GitHub
+gives the headings of an issue no anchors to link to. A note appended to
+the issue says so; `review.md` in the run directory is left as generated.
 
 To see the title and body that would be posted, without posting:
 
