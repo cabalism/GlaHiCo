@@ -65,8 +65,18 @@ data Cmd = ReviewCmd Opts | PublishCmd PublishOpts
 data PublishOpts = PublishOpts
   { runArg :: FilePath
   , reviewsRepo :: Maybe GitHubRepo
-  , dryRun :: Bool
+  , mode :: PublishMode
   }
+
+data PublishMode
+  = -- | Post the review.
+    Post
+  | -- | Print the title and body that would be posted.
+    DryRun
+  | -- | Write the review as it would be posted in a GitHub issue to files
+    -- in the run directory, for someone to make the issue by hand.
+    IssueFile
+  deriving (Eq)
 
 data Opts = Opts
   { target :: String
@@ -105,7 +115,14 @@ publishOptsP =
               <> help "GitHub repository to post the issue in; required to publish the review of a pull request"
           )
       )
-    <*> switch (long "dry-run" <> help "Print the title and body that would be posted, and post nothing")
+    <*> ( flag' DryRun (long "dry-run" <> help "Print the title and body that would be posted, and post nothing")
+            <|> flag'
+              IssueFile
+              ( long "issue-file"
+                  <> help "Write the review as it would be posted in a GitHub issue to issue.md in the run directory, and its title to issue-title.txt, and post nothing"
+              )
+            <|> pure Post
+        )
 
 optsP :: Parser Opts
 optsP =
@@ -377,7 +394,7 @@ runPublish dataDir opts = do
   haveReview <- doesFileExist reviewPath
   unless haveReview $ die (reviewPath <> " not found")
   published <- doesFileExist snippetPath
-  when (published && not opts.dryRun) $ do
+  when (published && opts.mode == Post) $ do
     prev <- eitherDecode <$> BL.readFile snippetPath
     let url = either (const "?") (fromMaybe "?" . vText "web_url") prev
     die
@@ -392,12 +409,26 @@ runPublish dataDir opts = do
   let (postTitle, postBody) = case forge of
         Just "github" -> (inertTitle title, issueBody review)
         _ -> (title, review)
-  if opts.dryRun
-    then do
+  case opts.mode of
+    DryRun -> do
       TIO.putStrLn ("Title: " <> postTitle)
       TIO.putStrLn ""
       TIO.putStr postBody
-    else do
+    IssueFile -> do
+      -- Whatever the run's target was, the files are for a GitHub issue.
+      let body = issueBody review
+          bodyPath = runDir </> "issue.md"
+          titlePath = runDir </> "issue-title.txt"
+      when (T.length body > issueBodyLimit) $
+        warn
+          ( "the review is " <> show (T.length body) <> " characters; GitHub limits an issue body to "
+              <> show issueBodyLimit
+          )
+      TIO.writeFile bodyPath body
+      TIO.writeFile titlePath (inertTitle title <> "\n")
+      putStrLn titlePath
+      putStrLn bodyPath
+    Post -> do
       done <- case forge of
         Just "github" -> case opts.reviewsRepo of
           Just repo -> publishIssue dataDir repo postTitle postBody

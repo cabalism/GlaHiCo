@@ -181,6 +181,19 @@ To see the title and body that would be posted, without posting:
 ./glahico.hs publish --dry-run RUN_DIR
 ```
 
+To make the issue by hand instead, with no token, write that copy to files:
+
+```sh
+./glahico.hs publish --issue-file RUN_DIR
+```
+
+This writes the body to `issue.md` and the title to `issue-title.txt` in
+the run directory, prints the two paths, and posts nothing. Paste the body
+from `issue.md`, not from `review.md`, or the pull request will show that
+the issue mentions it. The title has a zero-width space after its `#`, so
+that it does not link to an issue of that number in the reviews repository;
+copy it from the file to keep it.
+
 ### One-time token setup
 
 Create a fine-grained personal access token whose only permission is read
