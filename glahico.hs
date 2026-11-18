@@ -34,7 +34,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
-import Data.Char (isAlphaNum, isDigit, isHexDigit, toLower)
+import Data.Char (isAlphaNum, isAscii, isDigit, isHexDigit, toLower)
 import Data.Foldable (toList)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (intercalate, isInfixOf, isPrefixOf, nub, stripPrefix)
@@ -90,7 +90,7 @@ optsP :: Parser Opts
 optsP =
   Opts
     <$> strArgument
-      (metavar "TARGET" <> help "MR number (14892 or !14892), gitlab.haskell.org MR URL, local commit range (BASE..HEAD), or single commit")
+      (metavar "TARGET" <> help "MR number (14892 or !14892), gitlab.haskell.org MR URL, github.com pull request URL, local commit range (BASE..HEAD), or single commit")
     <*> strOption
       (long "finder-model" <> metavar "ALIAS" <> value "opus" <> showDefault <> help "Model for the finder stage (passed to `claude --model`: alias like opus/sonnet, or full ID like claude-opus-4-6)")
     <*> strOption
@@ -119,7 +119,17 @@ effortOption name h =
 --------------------------------------------------------------------------------
 
 -- | RangeTarget carries the base and head specs; empty sides default to HEAD.
-data Target = MrTarget Text Int | RangeTarget Text Text | CommitTarget Text
+data Target
+  = MrTarget Text Int
+  | PrTarget GitHubRepo PrNumber
+  | RangeTarget Text Text
+  | CommitTarget Text
+
+-- | A repository on github.com, written @OWNER/REPO@.
+newtype GitHubRepo = GitHubRepo Text
+
+-- | A pull request's number within its repository.
+newtype PrNumber = PrNumber Int
 
 parseTarget :: String -> Either String Target
 parseTarget s
@@ -127,8 +137,9 @@ parseTarget s
   | all isDigit s = Right (MrTarget "ghc/ghc" (read s))
   | '!' : ds <- s, not (null ds), all isDigit ds = Right (MrTarget "ghc/ghc" (read ds))
   | Just rest <- stripPrefix "https://gitlab.haskell.org/" s = parseMrUrl rest
+  | Just rest <- stripPrefix "https://github.com/" s = parsePrUrl rest
   | "http://" `isPrefixOf` s || "https://" `isPrefixOf` s =
-      Left "only gitlab.haskell.org merge-request URLs are supported"
+      Left "only gitlab.haskell.org merge-request URLs and github.com pull-request URLs are supported"
   | (a, rest) <- T.breakOn ".." (T.pack s)
   , Just b <- T.stripPrefix ".." rest =
       Right (RangeTarget (orHead a) (orHead (T.dropWhile (== '.') b)))
@@ -146,6 +157,26 @@ parseMrUrl rest
   , not (T.null proj) =
       Right (MrTarget proj (read (T.unpack ds)))
   | otherwise = Left ("cannot parse GitLab MR URL: https://gitlab.haskell.org/" <> rest)
+
+-- | Parse what follows @https://github.com/@ in a pull request URL:
+-- @OWNER/REPO/pull/N@, optionally followed by a tab (@/files@), a query or
+-- a fragment. The owner and repository end up in a directory name and an
+-- API path, so only the characters GitHub allows in them are accepted.
+parsePrUrl :: String -> Either String Target
+parsePrUrl rest = case T.splitOn "/" (T.pack rest) of
+  owner : repo : "pull" : n : _
+    | nameOk owner
+    , nameOk repo
+    , ds <- T.takeWhile isDigit n
+    , not (T.null ds)
+    , T.all (`elem` ("/?#" :: String)) (T.take 1 (T.drop (T.length ds) n)) ->
+        Right (PrTarget (GitHubRepo (owner <> "/" <> repo)) (PrNumber (read (T.unpack ds))))
+  _ -> Left ("cannot parse GitHub pull request URL: https://github.com/" <> rest)
+  where
+    nameOk t =
+      not (T.null t)
+        && t `notElem` [".", ".."]
+        && T.all (\c -> isAscii c && (isAlphaNum c || c `elem` ("-_." :: String))) t
 
 --------------------------------------------------------------------------------
 -- Small helpers
@@ -266,6 +297,15 @@ glabJson :: String -> IO Value
 glabJson endpoint =
   tryGlabJson endpoint
     >>= either (\e -> die ("glab api " <> endpoint <> " failed:\n" <> T.unpack e)) pure
+
+--------------------------------------------------------------------------------
+-- gh api
+--------------------------------------------------------------------------------
+
+ghJson :: String -> IO Value
+ghJson endpoint = do
+  out <- capture "gh" ["api", "--hostname", "github.com", endpoint]
+  either (\e -> die ("gh api " <> endpoint <> ": cannot parse the response as JSON: " <> e)) pure (eitherDecode out)
 
 --------------------------------------------------------------------------------
 -- Publishing snippets
@@ -402,6 +442,26 @@ gitlabChangeMeta project iid v =
           ("https://gitlab.haskell.org/" <> project <> "/-/merge_requests/" <> tshow iid)
           (vText "web_url" v)
     , description = fromMaybe "" (vText "description" v)
+    }
+
+-- | Read a GitHub pull request's API JSON.
+githubChangeMeta :: GitHubRepo -> PrNumber -> Value -> ChangeMeta
+githubChangeMeta (GitHubRepo repo) (PrNumber n) v =
+  ChangeMeta
+    { project = repo
+    , ref = "#" <> tshow n
+    , title = fromMaybe "(no title)" (vText "title" v)
+    , author = maybe "?" ("@" <>) (vKey "user" v >>= vText "login")
+    , -- head.label is OWNER:BRANCH, which tells a fork's branch from one in
+      -- the repository itself.
+      sourceBranch = fromMaybe "?" (vKey "head" v >>= vText "label")
+    , targetBranch = fromMaybe "?" (vKey "base" v >>= vText "ref")
+    , labels = mapMaybe (vText "name") (vArray "labels" v)
+    , url =
+        fromMaybe
+          ("https://github.com/" <> repo <> "/pull/" <> tshow n)
+          (vText "html_url" v)
+    , description = fromMaybe "" (vText "body" v)
     }
 
 urlEncodeProject :: Text -> String
@@ -593,6 +653,64 @@ resolveMr dataDir project iid = do
   let wt = dataDir </> "wt" </> slug
   prepareWorktree (dataDir </> "submodules") mirror wt headSha
   pure Resolved {slug, worktree = wt, baseSha, headSha, mr = Just (gitlabChangeMeta project iid meta)}
+
+-- | Resolve a GitHub pull request to a worktree at its head. Each repository
+-- gets a mirror and submodule stores of its own, cloned over HTTPS since
+-- only public repositories are reviewed.
+resolvePr :: FilePath -> GitHubRepo -> PrNumber -> IO Resolved
+resolvePr dataDir ghRepo@(GitHubRepo repo) prNumber@(PrNumber n) = do
+  let repoDir = dataDir </> "mirrors" </> "github.com" </> T.unpack repo
+      mirror = repoDir <> ".git"
+      slug = projectSlug repo <> "-pr-" <> show n
+  repoMeta <- ghJson ("repos/" <> T.unpack repo)
+  visibility <- reqText "repository metadata" "visibility" repoMeta
+  unless (visibility == "public") $
+    die
+      ( "repository " <> T.unpack repo <> " has visibility " <> show visibility
+          <> "; GlaHiCo only reviews public repositories"
+      )
+  pr <- ghJson ("repos/" <> T.unpack repo <> "/pulls/" <> show n)
+  baseBranch <-
+    maybe (die "pull request metadata: missing field base.ref") pure (vKey "base" pr >>= vText "ref")
+  ensureMirror
+    (MirrorDir mirror)
+    (RepoLabel (T.unpack repo))
+    (CloneUrl ("https://github.com/" <> T.unpack repo <> ".git"))
+  putStrLn ("Fetching #" <> show n <> " from " <> T.unpack repo <> " ...")
+  -- Unlike GitLab, GitHub keeps refs/pull/N/head after a pull request is
+  -- closed or merged, so there is no fallback to the API's head SHA.
+  gitLoud
+    mirror
+    [ "fetch"
+    , "origin"
+    , "+refs/pull/" <> show n <> "/head:refs/glahico/" <> slug
+    , "+refs/heads/" <> T.unpack baseBranch <> ":refs/glahico/" <> slug <> "-base"
+    ]
+  headSha <- gitIn mirror ["rev-parse", "refs/glahico/" <> slug]
+  case vKey "head" pr >>= vText "sha" of
+    Just apiSha
+      | apiSha /= headSha ->
+          warn
+            ( "fetched pull request head " <> T.unpack headSha <> " differs from API sha " <> T.unpack apiSha
+                <> " (the pull request may have been updated mid-run)"
+            )
+    _ -> pure ()
+  tipBase <- gitIn mirror ["merge-base", "refs/glahico/" <> slug, "refs/glahico/" <> slug <> "-base"]
+  -- Once a pull request has been merged without squashing or rebasing, its
+  -- head is on the base branch and the merge base is the head itself, which
+  -- would make the diff empty. The API still has the base the pull request
+  -- was opened against.
+  baseSha <- case vKey "base" pr >>= vText "sha" of
+    Just apiBase | tipBase == headSha -> do
+      warn
+        ( "#" <> show n <> " is already contained in " <> T.unpack baseBranch
+            <> "; diffing against the base recorded by GitHub, " <> T.unpack apiBase
+        )
+      gitIn mirror ["merge-base", "refs/glahico/" <> slug, T.unpack apiBase]
+    _ -> pure tipBase
+  let wt = dataDir </> "wt" </> slug
+  prepareWorktree (repoDir <> ".submodules") mirror wt headSha
+  pure Resolved {slug, worktree = wt, baseSha, headSha, mr = Just (githubChangeMeta ghRepo prNumber pr)}
 
 -- | rev-parse a spec; if unknown locally, try fetching it from the repo's
 -- remotes (direct-SHA fetch for full hashes, plain fetch otherwise) and retry.
@@ -1361,6 +1479,9 @@ runReview dataDir opts = do
     MrTarget project iid -> do
       putStrLn ("Target: !" <> show iid <> " in " <> T.unpack project)
       resolveMr dataDir project iid
+    PrTarget repo@(GitHubRepo name) number@(PrNumber n) -> do
+      putStrLn ("Target: #" <> show n <> " in " <> T.unpack name)
+      resolvePr dataDir repo number
     RangeTarget a b -> do
       putStrLn ("Target: local range " <> T.unpack a <> ".." <> T.unpack b)
       resolveLocal dataDir a b
