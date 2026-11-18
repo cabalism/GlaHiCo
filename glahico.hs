@@ -76,6 +76,9 @@ data PublishMode
   | -- | Write the review as it would be posted in a GitHub issue to files
     -- in the run directory, for someone to make the issue by hand.
     IssueFile
+  | -- | Write the review as a comment for a GitHub pull request, folded
+    -- away in a @<details>@ block, to a file in the run directory.
+    CommentFile
   deriving (Eq)
 
 data Opts = Opts
@@ -120,6 +123,11 @@ publishOptsP =
               IssueFile
               ( long "issue-file"
                   <> help "Write the review as it would be posted in a GitHub issue to issue.md in the run directory, and its title to issue-title.txt, and post nothing"
+              )
+            <|> flag'
+              CommentFile
+              ( long "comment-file"
+                  <> help "Write the review as a comment for a GitHub pull request, folded in a <details> block, to comment.md in the run directory, and post nothing"
               )
             <|> pure Post
         )
@@ -419,14 +427,16 @@ runPublish dataDir opts = do
       let body = issueBody review
           bodyPath = runDir </> "issue.md"
           titlePath = runDir </> "issue-title.txt"
-      when (T.length body > issueBodyLimit) $
-        warn
-          ( "the review is " <> show (T.length body) <> " characters; GitHub limits an issue body to "
-              <> show issueBodyLimit
-          )
+      warnIfTooLong "an issue body" body
       TIO.writeFile bodyPath body
       TIO.writeFile titlePath (inertTitle title <> "\n")
       putStrLn titlePath
+      putStrLn bodyPath
+    CommentFile -> do
+      let body = commentBody title review
+          bodyPath = runDir </> "comment.md"
+      warnIfTooLong "a comment" body
+      TIO.writeFile bodyPath body
       putStrLn bodyPath
     Post -> do
       done <- case forge of
@@ -448,6 +458,15 @@ runPublish dataDir opts = do
             , "published_at" .= formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now
             ]
       putStrLn (T.unpack done.publishedUrl)
+
+-- | GitHub limits an issue body and a comment to the same length.
+warnIfTooLong :: String -> Text -> IO ()
+warnIfTooLong what body =
+  when (T.length body > issueBodyLimit) $
+    warn
+      ( "the review is " <> show (T.length body) <> " characters; GitHub limits " <> what <> " to "
+          <> show issueBodyLimit
+      )
 
 -- | The forge recorded when the run was made. Runs from before
 -- @target.json@ existed have none and are published as snippets.
@@ -574,6 +593,30 @@ issueBody review =
     <> " Links to headings within the review were reduced to their text, as"
     <> " GitHub gives headings in an issue no anchors."
     <> " The text is otherwise as generated._\n"
+
+-- | A review as a comment for a pull request: the issue body, folded away in
+-- a @<details>@ block that shows only the review's title until it is opened.
+-- The title moves from the review's first line into the @<summary>@. That is
+-- HTML, where GitHub renders no Markdown but still links references, so the
+-- title is escaped and made inert as an issue's title is.
+--
+-- The references are made inert here too. One to the pull request the
+-- comment is on would do no harm, but the comment may be posted elsewhere,
+-- and the writeups may refer to other issues and users.
+commentBody :: Text -> Text -> Text
+commentBody title review =
+  "<details>\n<summary>" <> htmlEscape (inertTitle title) <> "</summary>\n\n"
+    <> T.stripEnd (issueBody (dropTitle review))
+    <> "\n\n</details>\n"
+  where
+    dropTitle r = case T.lines r of
+      l : ls | "# " `T.isPrefixOf` l -> T.unlines (dropWhile (T.null . T.strip) ls)
+      _ -> r
+    htmlEscape = T.concatMap $ \case
+      '&' -> "&amp;"
+      '<' -> "&lt;"
+      '>' -> "&gt;"
+      c -> T.singleton c
 
 -- | An issue title is plain text, so the zero-width space goes in as a
 -- character where the body has it as an HTML entity.

@@ -194,6 +194,18 @@ the issue mentions it. The title has a zero-width space after its `#`, so
 that it does not link to an issue of that number in the reviews repository;
 copy it from the file to keep it.
 
+To put the review on the pull request itself, as a comment:
+
+```sh
+./glahico.hs publish --comment-file RUN_DIR
+```
+
+This writes `comment.md` in the run directory, prints its path, and posts
+nothing. The file is the same copy, folded away in a `<details>` block that
+shows only the review's title until a reader opens it. Note that a comment
+notifies everyone subscribed to the pull request, where a link to an issue
+leaves the review for those who choose to follow it.
+
 ### One-time token setup
 
 Create a fine-grained personal access token whose only permission is read
